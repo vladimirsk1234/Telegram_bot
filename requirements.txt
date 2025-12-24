@@ -1,5 +1,5 @@
-python-telegram-bot[job-queue]>=21.9
 streamlit
+python-telegram-bot[job-queue]>=21.9
 yfinance
 pandas
 numpy
