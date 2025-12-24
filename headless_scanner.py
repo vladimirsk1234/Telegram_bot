@@ -8,7 +8,6 @@ import pandas as pd
 import yfinance as yf
 import nest_asyncio
 import streamlit as st
-import os
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import (
@@ -24,16 +23,13 @@ from telegram.ext import (
 # --- КОНФИГУРАЦИЯ ---
 nest_asyncio.apply()
 
-# Настройка логгирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ==========================================
 # 1. ЗАГРУЗКА СЕКРЕТОВ
-# ==========================================
 try:
     TG_TOKEN = st.secrets["TG_TOKEN"]
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
@@ -42,20 +38,17 @@ except Exception as e:
     st.error(f"❌ Ошибка секретов: {e}")
     st.stop()
 
-# ==========================================
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-# ==========================================
 last_scan_time = "Никогда"
 sent_today = set()
 
-# Константы индикаторов
+# Индикаторы
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
-# ДЕФОЛТНЫЕ ПАРАМЕТРЫ (БАЗА)
+# --- НОВЫЕ ДЕФОЛТНЫЕ ПАРАМЕТРЫ ---
 DEFAULT_PARAMS = {
-    'portfolio': 10000.0,
+    'risk_usd': 50.0,   # Риск на сделку в долларах (ВМЕСТО % и Портфеля)
     'min_rr': 1.25,
-    'risk_pct': 0.2,
     'max_atr': 5.0,
     'sma': 200,
     'tf': 'Daily',
@@ -63,9 +56,7 @@ DEFAULT_PARAMS = {
     'autoscan': False,
 }
 
-# ==========================================
-# 3. ЛОГИКА СКРИНЕРА (100% COPY)
-# ==========================================
+# 3. ЛОГИКА СКРИНЕРА
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
@@ -183,9 +174,7 @@ def analyze_trade(df, idx):
         "SL_Type": "STR" if abs(final_sl - crit) < 0.01 else "ATR"
     }, "OK"
 
-# ==========================================
-# 4. HELPER FUNCTIONS & AUTH
-# ==========================================
+# 4. UI HELPER FUNCTIONS
 
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
@@ -210,37 +199,28 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
     context.bot_data['active_users'].add(user_id)
-    
     allowed = get_allowed_users()
     if user_id not in allowed:
         await update.message.reply_text("⛔ Доступ запрещен.", parse_mode='HTML')
         return False
     return True
 
-# --- ВАЖНАЯ ФУНКЦИЯ ДЛЯ ПАРАМЕТРОВ ---
 async def safe_get_params(context):
-    """
-    Умное получение параметров. 
-    1. Если параметров нет вообще -> грузим Default.
-    2. Если есть, но не все ключи -> дополняем из Default (Fix для сброса).
-    """
     if 'params' not in context.user_data:
         context.user_data['params'] = DEFAULT_PARAMS.copy()
     else:
-        # Проверяем целостность. Если добавились новые ключи в будущем - они не сломают бота.
         for k, v in DEFAULT_PARAMS.items():
             if k not in context.user_data['params']:
                 context.user_data['params'][k] = v
-                
     return context.user_data['params']
 
-def format_luxury_card(ticker, d, shares, is_new, pe_val):
+def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     tv_link = f"https://www.tradingview.com/chart/?symbol={ticker.replace('-', '.')}"
     badge = "🆕" if is_new else ""
     pe_str = f"| P/E: <b>{pe_val:.0f}</b>" if pe_val else ""
     val_pos = shares * d['P']
     profit = (d['TP'] - d['P']) * shares
-    loss = (d['P'] - d['SL']) * shares
+    loss = (d['P'] - d['SL']) * shares # Should be approx risk_usd
     atr_pct = (d['ATR'] / d['P']) * 100
     
     return (
@@ -258,22 +238,21 @@ def get_keyboard(p):
     new_txt = "🆕 On" if p['new_only'] else "🆕 Off"
     auto_txt = "🤖 On" if p['autoscan'] else "🤖 Off"
     
+    # --- ОБНОВЛЕННАЯ КЛАВИАТУРА ---
     kb = [
         [
-            InlineKeyboardButton(f"💰 ${p['portfolio']:.0f}", callback_data="set_port"),
+            # Кнопка РИСК В ДОЛЛАРАХ
+            InlineKeyboardButton(f"💸 Risk: ${p['risk_usd']:.0f}", callback_data="set_risk_usd"),
             InlineKeyboardButton(f"⚖️ RR: {p['min_rr']}", callback_data="set_rr"),
         ],
         [
-            InlineKeyboardButton(f"⚠️ Risk: {p['risk_pct']}%", callback_data="set_risk"),
-            InlineKeyboardButton(f"📊 ATR: {p['max_atr']}%", callback_data="set_matr"),
+            InlineKeyboardButton(f"📊 Max ATR: {p['max_atr']}%", callback_data="set_matr"),
+            InlineKeyboardButton(f"📈 SMA {p['sma']}", callback_data="set_sma"),
         ],
         [
-            InlineKeyboardButton(f"📈 SMA {p['sma']}", callback_data="set_sma"),
             InlineKeyboardButton(tf_txt, callback_data="toggle_tf"),
             InlineKeyboardButton(new_txt, callback_data="toggle_new"),
-        ],
-        [
-            InlineKeyboardButton(f"AutoScan: {auto_txt}", callback_data="toggle_auto"),
+            InlineKeyboardButton(f"Auto: {auto_txt}", callback_data="toggle_auto"),
         ],
         [
             InlineKeyboardButton("▶️ START SCAN", callback_data="start_scan"),
@@ -289,37 +268,38 @@ def get_status_text(status="💤 Ожидание", p=None):
         f"⚙️ <b>Статус:</b> {status}\n"
         f"🕒 <b>Посл. скан:</b> {last_scan_time}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"SMA: {p['sma']} | TF: {p['tf']} | New: {p['new_only']}\n"
-        f"Risk: {p['risk_pct']}% | RR: {p['min_rr']} | ATR: {p['max_atr']}%\n"
-        f"Port: ${p['portfolio']:.0f}"
+        f"Risk: <b>${p['risk_usd']}</b> | RR: {p['min_rr']} | ATR: {p['max_atr']}%\n"
+        f"Mode: {p['tf']} | SMA: {p['sma']} | New: {p['new_only']}"
     )
-
-# ==========================================
-# 5. MENUS & UTILS
-# ==========================================
 
 async def refresh_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, p, status="Готов"):
     """Удаляет старое и шлет новое меню внизу."""
-    try:
-        if update.callback_query: await update.callback_query.message.delete()
-        elif update.message: pass # Не удаляем ввод юзера
-    except: pass
+    chat_id = update.effective_chat.id
     
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
+    # Пытаемся удалить старое меню (если сохранили его ID)
+    last_id = context.user_data.get('last_menu_id')
+    if last_id:
+        try: await context.bot.delete_message(chat_id, last_id)
+        except: pass
+        
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
         text=get_status_text(status, p),
         reply_markup=get_keyboard(p),
         parse_mode='HTML'
     )
+    context.user_data['last_menu_id'] = msg.message_id
 
-# ==========================================
-# 6. SCAN PROCESS
-# ==========================================
+# 5. SCAN PROCESS
 async def run_scan_process(update, context, p, tickers, manual_input=False):
+    # Добавляем кнопку STOP прямо к прогресс-бару
+    stop_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏹ STOP SCAN", callback_data="stop_scan")]])
+    
     status_msg = await context.bot.send_message(
         chat_id=update.effective_chat.id, 
         text="🚀 <b>Начинаю сканирование...</b>", 
-        parse_mode=constants.ParseMode.HTML
+        parse_mode=constants.ParseMode.HTML,
+        reply_markup=stop_kb
     )
     
     results_found = 0
@@ -327,18 +307,21 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
     scan_p = p.copy() 
     
     for i, t in enumerate(tickers):
+        # Проверка флага остановки
         if not context.user_data.get('scanning', False) and not manual_input:
             await status_msg.edit_text("⏹ Сканирование остановлено.")
             break
 
+        # Обновление прогресс-бара
         if i % 10 == 0 or i == total - 1:
             pct = int((i + 1) / total * 10)
             bar = "█" * pct + "░" * (10 - pct)
             try:
                 await status_msg.edit_text(
-                    f"🚀 <b>Scan:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n"
-                    f"<i>Params: SMA{scan_p['sma']}, {scan_p['tf']}</i>", 
-                    parse_mode='HTML'
+                    f"🚀 <b>Scanning:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n"
+                    f"<i>SMA{scan_p['sma']} | {scan_p['tf']}</i>", 
+                    parse_mode='HTML',
+                    reply_markup=stop_kb # Кнопка STOP всегда тут
                 )
             except: pass
 
@@ -368,21 +351,31 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
             if d['RR'] < scan_p['min_rr']: continue
             if (d['ATR']/d['P'])*100 > scan_p['max_atr']: continue
             
-            risk_amt = scan_p['portfolio'] * (scan_p['risk_pct'] / 100.0)
-            risk_share = d['P'] - d['SL']
-            if risk_share <= 0: continue
-            shares = min(int(risk_amt / risk_share), int(scan_p['portfolio'] / d['P']))
-            if shares < 1: continue
+            # --- НОВАЯ ЛОГИКА РИСКА В $ ---
+            risk_per_share = d['P'] - d['SL']
+            if risk_per_share <= 0: continue
+            
+            # Покупаем столько, чтобы риск был равен risk_usd
+            shares = int(scan_p['risk_usd'] / risk_per_share)
+            
+            if shares < 1: 
+                if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: Stop too close/Risk too low")
+                continue
             
             pe = get_financial_info(t)
-            card = format_luxury_card(t, d, shares, is_new, pe)
+            card = format_luxury_card(t, d, shares, is_new, pe, scan_p['risk_usd'])
             
+            # Отправляем карточку
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=card,
                 parse_mode=constants.ParseMode.HTML,
                 disable_web_page_preview=True
             )
+            
+            # ПЕРЕПОСЫЛАЕМ МЕНЮ, ЧТОБЫ ОНО БЫЛО ВНИЗУ
+            if not manual_input and not scan_p.get('is_auto'):
+                await refresh_menu(update, context, p, status="Идет сканирование...")
             
             if scan_p.get('is_auto'): sent_today.add(t)
             results_found += 1
@@ -402,47 +395,32 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
     )
     context.user_data['scanning'] = False
     
-    # Возвращаем меню
     if not manual_input and not scan_p.get('is_auto'):
         await refresh_menu(update, context, p)
 
-# ==========================================
-# 7. HANDLERS (LOGIC FIXES HERE)
-# ==========================================
+# 6. HANDLERS
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
     p = await safe_get_params(context)
     context.user_data['scanning'] = False
     context.user_data['input_mode'] = None
-    
-    await update.message.reply_html(
-        get_status_text(p=p),
-        reply_markup=get_keyboard(p)
-    )
+    await refresh_menu(update, context, p)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     active = context.bot_data.get('active_users', set())
     allowed = get_allowed_users()
-    msg = (
-        f"📊 <b>АДМИН</b>\nАктивных: {len(active)}\nWhitelist: {len(allowed)}\nСкан: {last_scan_time}\nIDs: {list(active)}"
-    )
+    msg = f"📊 <b>АДМИН</b>\nАктивных: {len(active)}\nWhitelist: {len(allowed)}\nСкан: {last_scan_time}\nIDs: {list(active)}"
     await update.message.reply_html(msg)
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    
-    # 1. ЗАГРУЖАЕМ ПАРАМЕТРЫ С ГАРАНТИЕЙ
     p = await safe_get_params(context)
     
-    # 2. ИЗМЕНЯЕМ ТОЛЬКО ОДИН ПАРАМЕТР
-    if data == "toggle_tf": 
-        p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
-    
-    elif data == "toggle_new": 
-        p['new_only'] = not p['new_only']
+    if data == "toggle_tf": p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
+    elif data == "toggle_new": p['new_only'] = not p['new_only']
     
     elif data == "toggle_auto":
         p['autoscan'] = not p['autoscan']
@@ -462,8 +440,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "start_scan":
         if context.user_data.get('scanning'): return
         context.user_data['scanning'] = True
-        try: await query.message.delete()
-        except: pass
         tickers = get_sp500_tickers()
         asyncio.create_task(run_scan_process(update, context, p, tickers))
         return 
@@ -473,17 +449,17 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(update.effective_chat.id, "🛑 Остановка...")
         return
 
-    elif data in ["set_port", "set_rr", "set_risk", "set_matr"]:
+    # ОБРАБОТКА ВВОДА ДЛЯ РИСКА В $
+    elif data in ["set_risk_usd", "set_rr", "set_matr"]:
         context.user_data['input_mode'] = data
         try: await query.message.delete()
         except: pass
-        await context.bot.send_message(update.effective_chat.id, f"✏️ Введите значение:", parse_mode='HTML')
+        
+        lbl = "Риск в $ (например 50)" if data == "set_risk_usd" else "Значение"
+        await context.bot.send_message(update.effective_chat.id, f"✏️ Введите {lbl}:", parse_mode='HTML')
         return
 
-    # 3. ПРИНУДИТЕЛЬНО СОХРАНЯЕМ ИЗМЕНЕНИЯ В КОНТЕКСТЕ
     context.user_data['params'] = p
-    
-    # 4. ОБНОВЛЯЕМ МЕНЮ
     await refresh_menu(update, context, p)
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -502,13 +478,11 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         val = float(txt.replace(',', '.'))
-        if mode == "set_port": p['portfolio'] = val
+        if mode == "set_risk_usd": p['risk_usd'] = max(1.0, val) # Минимум 1 доллар
         elif mode == "set_rr": p['min_rr'] = max(1.25, val)
-        elif mode == "set_risk": p['risk_pct'] = max(0.2, val)
         elif mode == "set_matr": p['max_atr'] = val
         context.user_data['input_mode'] = None
         
-        # Сохраняем и шлем меню
         context.user_data['params'] = p
         await refresh_menu(update, context, p, status="Параметр обновлен")
         
@@ -533,16 +507,11 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(job.chat_id, "🤖 <b>Автоскан...</b>", parse_mode='HTML')
     await run_scan_process(u, context, p, get_sp500_tickers())
 
-# ==========================================
-# 8. MAIN EXECUTION
-# ==========================================
+# 7. MAIN
 if __name__ == '__main__':
     st.title("💎 Vova Screener Bot Running")
-    st.write("Бот запущен. Параметры изолированы и сохраняются.")
-    
-    # ⚠️ ВАЖНО: update_interval=1 заставляет сохранять данные ПОСЛЕ КАЖДОГО клика
+    st.write("Bot is live.")
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
-    
     application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
     application.add_handler(CommandHandler('start', start))
