@@ -8,7 +8,6 @@ import pandas as pd
 import yfinance as yf
 import nest_asyncio
 import streamlit as st
-import os
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import (
@@ -41,7 +40,6 @@ except Exception as e:
 
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 last_scan_time = "Никогда"
-next_scan_time = "Не запланировано" # Для отображения на сайте
 sent_today = set()
 
 # Индикаторы
@@ -58,7 +56,7 @@ DEFAULT_PARAMS = {
     'autoscan': False,
 }
 
-# 3. ЛОГИКА СКРИНЕРА (100% COPY)
+# 3. ЛОГИКА СКРИНЕРА
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
@@ -176,11 +174,12 @@ def analyze_trade(df, idx):
         "SL_Type": "STR" if abs(final_sl - crit) < 0.01 else "ATR"
     }, "OK"
 
-# 4. UI HELPER FUNCTIONS
+# 4. HELPER FUNCTIONS
 
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(tz)
+    # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     if now.weekday() >= 5: return False
     start = now.replace(hour=9, minute=30, second=0, microsecond=0)
     end = now.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -274,8 +273,6 @@ def get_status_text(status="💤 Ожидание", p=None):
 
 async def refresh_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, p, status="Готов"):
     chat_id = update.effective_chat.id
-    
-    # Удаляем старое меню
     last_id = context.user_data.get('last_menu_id')
     if last_id:
         try: await context.bot.delete_message(chat_id, last_id)
@@ -289,14 +286,14 @@ async def refresh_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, p, st
     )
     context.user_data['last_menu_id'] = msg.message_id
 
-# 5. SCAN PROCESS (UNIFIED FOR AUTO AND MANUAL)
+# 5. SCAN PROCESS
 async def run_scan_process(update, context, p, tickers, manual_input=False, is_auto=False):
-    # При автоскане добавляем плашку с кнопкой
     stop_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏹ STOP SCAN", callback_data="stop_scan")]])
     
+    start_txt = "🤖 <b>Автоскан запущен...</b>" if is_auto else "🚀 <b>Начинаю сканирование...</b>"
     status_msg = await context.bot.send_message(
         chat_id=update.effective_chat.id, 
-        text="🚀 <b>Начинаю сканирование...</b>" if not is_auto else "🤖 <b>Автоскан запущен...</b>", 
+        text=start_txt, 
         parse_mode=constants.ParseMode.HTML,
         reply_markup=stop_kb
     )
@@ -306,12 +303,10 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     scan_p = p.copy() 
     
     for i, t in enumerate(tickers):
-        # Проверка остановки
         if not context.user_data.get('scanning', False) and not manual_input:
             await status_msg.edit_text("⏹ Сканирование остановлено.")
             break
 
-        # Прогресс бар
         if i % 10 == 0 or i == total - 1:
             pct = int((i + 1) / total * 10)
             bar = "█" * pct + "░" * (10 - pct)
@@ -325,7 +320,7 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             except: pass
 
         try:
-            await asyncio.sleep(0.01) # Yield
+            await asyncio.sleep(0.01)
             inter = "1d" if scan_p['tf'] == "Daily" else "1wk"
             fetch_period = "2y" if scan_p['tf'] == "Daily" else "5y"
             
@@ -345,17 +340,14 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
-            # --- ЛОГИКА АВТОСКАНА (ЖЕСТКАЯ) ---
+            # --- AUTO LOGIC ---
             if is_auto:
-                # 1. Только новые сигналы ВСЕГДА для автоскана
-                if not is_new: continue
-                # 2. Не повторять сегодня
-                if t in sent_today: continue
+                if not is_new: continue # Always New Only
+                if t in sent_today: continue # No duplicates
             else:
-                # Для ручного режима слушаем настройки
                 if not manual_input and scan_p['new_only'] and not is_new: continue
             
-            # Остальные фильтры
+            # Filters
             if d['RR'] < scan_p['min_rr']: continue
             if (d['ATR']/d['P'])*100 > scan_p['max_atr']: continue
             
@@ -376,7 +368,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
                 disable_web_page_preview=True
             )
             
-            # Обновляем меню внизу только если не авто (чтобы не спамить при автоскане каждым сигналом)
             if not is_auto and not manual_input:
                 await refresh_menu(update, context, p, status="Идет сканирование...")
             
@@ -391,14 +382,10 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     try: await status_msg.delete()
     except: pass
     
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=f"✅ <b>{'Авто' if is_auto else 'Ручной'} Скан завершен!</b> Найдено: {results_found}",
-        parse_mode='HTML'
-    )
+    final_txt = f"✅ <b>{'Авто' if is_auto else 'Ручной'} Скан завершен!</b> Найдено: {results_found}"
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=final_txt, parse_mode='HTML')
     context.user_data['scanning'] = False
     
-    # Возвращаем меню, если это был ручной скан
     if not is_auto and not manual_input:
         await refresh_menu(update, context, p)
 
@@ -414,7 +401,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     active = context.bot_data.get('active_users', set())
     allowed = get_allowed_users()
-    msg = f"📊 <b>АДМИН</b>\nАктивных: {len(active)}\nWhitelist: {len(allowed)}\nСкан: {last_scan_time}\nAuto Next: {next_scan_time}"
+    msg = f"📊 <b>АДМИН</b>\nАктивных: {len(active)}\nWhitelist: {len(allowed)}\nСкан: {last_scan_time}"
     await update.message.reply_html(msg)
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,14 +417,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p['autoscan'] = not p['autoscan']
         if p['autoscan']:
             chat_id = update.effective_chat.id
-            # Запускаем джоб раз в час (3600 сек)
             context.job_queue.run_repeating(auto_scan_job, interval=3600, first=10, chat_id=chat_id, user_id=ADMIN_ID, name=str(chat_id))
-            await context.bot.send_message(chat_id, "🤖 Автоскан ВКЛ.")
+            await context.bot.send_message(chat_id, "🤖 Автоскан ВКЛ (раз в час).")
         else:
             for job in context.job_queue.get_jobs_by_name(str(update.effective_chat.id)): job.schedule_removal()
             await context.bot.send_message(update.effective_chat.id, "🤖 Автоскан ВЫКЛ.")
-            global next_scan_time
-            next_scan_time = "Остановлен"
             
     elif data == "set_sma":
         opts = [100, 150, 200]
@@ -453,7 +437,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "stop_scan":
         context.user_data['scanning'] = False
-        # Для автоскана тоже сработает, так как контекст общий
         await context.bot.send_message(update.effective_chat.id, "🛑 Остановка...")
         return
 
@@ -488,29 +471,19 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif mode == "set_rr": p['min_rr'] = max(1.25, val)
         elif mode == "set_matr": p['max_atr'] = val
         context.user_data['input_mode'] = None
-        
         context.user_data['params'] = p
         await refresh_menu(update, context, p, status="Параметр обновлен")
-        
     except: await update.message.reply_text("❌ Введите число.")
 
 async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
-    global sent_today, next_scan_time
+    global sent_today
     
-    # Расчет следующего времени (примерно)
-    utc_now = datetime.datetime.now(pytz.utc)
-    next_run = utc_now + datetime.timedelta(seconds=3600)
     ny_tz = pytz.timezone('US/Eastern')
-    next_scan_time = next_run.astimezone(ny_tz).strftime("%H:%M ET")
-    
-    # Сброс кэша тикеров утром
     now_ny = datetime.datetime.now(ny_tz)
     if now_ny.hour == 9 and now_ny.minute < 5: sent_today.clear()
     
-    if not is_market_open(): 
-        next_scan_time = "Рынок закрыт"
-        return 
+    if not is_market_open(): return 
     
     class Dummy: pass
     u = Dummy(); u.effective_chat = Dummy(); u.effective_chat.id = job.chat_id
@@ -519,23 +492,38 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
          context.application.user_data.setdefault(job.user_id, {})['params'] = DEFAULT_PARAMS.copy()
     
     p = context.application.user_data[job.user_id]['params'].copy()
-    
-    # Флаг старта сканирования для кнопки STOP
     context.application.user_data[job.user_id]['scanning'] = True
     
-    # is_auto=True включает жесткие фильтры (New Only + No Duplicates)
     await run_scan_process(u, context, p, get_sp500_tickers(), is_auto=True)
 
 # 7. MAIN
 if __name__ == '__main__':
-    st.set_page_config(page_title="Vova Bot Status", page_icon="🤖")
+    st.set_page_config(page_title="Vova Bot", page_icon="🤖")
+    
+    # --- WEB DASHBOARD ---
     st.title("💎 Vova Screener Bot")
     
-    # Отображение времени на сайте
-    st.metric(label="Next Auto-Scan (Approx)", value=next_scan_time)
+    # MARKET STATUS
+    ny_tz = pytz.timezone('US/Eastern')
+    now_ny = datetime.datetime.now(ny_tz)
+    market_open = is_market_open()
     
-    st.write("Бот работает в фоне. Перейдите в Telegram.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("USA Market", "OPEN" if market_open else "CLOSED", delta=now_ny.strftime("%H:%M NY"))
     
+    with c2:
+        # NEXT SCAN CALC
+        if market_open:
+            next_scan = (now_ny + datetime.timedelta(hours=1)).replace(minute=0, second=10)
+            time_left = next_scan - now_ny
+            st.metric("Next Auto-Scan", next_scan.strftime("%H:%M:%S"), delta=f"In {str(time_left).split('.')[0]}")
+        else:
+            st.metric("Next Auto-Scan", "PAUSED", delta="Market Closed", delta_color="off")
+    
+    st.info("💡 Refresh this page to see updated times.")
+    
+    # BOT START
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
