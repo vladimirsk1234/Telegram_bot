@@ -1,6 +1,9 @@
+python-telegram-bot[job-queue]>=21.9
 streamlit
 yfinance
 pandas
 numpy
 requests
 lxml
+pytz
+nest_asyncio
