@@ -10,6 +10,7 @@ import nest_asyncio
 import streamlit as st
 import time
 import os
+import gc
 
 # Импорт Telegram
 from telegram import (
@@ -49,7 +50,7 @@ except Exception as e:
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 last_scan_time = "Never"
 
-# Индикаторы
+# Константы индикаторов (Как в Web)
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
 # ДЕФОЛТНЫЕ ПАРАМЕТРЫ
@@ -63,13 +64,18 @@ DEFAULT_PARAMS = {
     'autoscan': False,
 }
 
-# 3. ЛОГИКА СКРИНЕРА
+# ==========================================
+# 3. МАТЕМАТИКА И ЛОГИКА (EXACT COPY FROM WEB)
+# ==========================================
+
+# --- DATA FETCHING ---
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {"User-Agent": "Mozilla/5.0"}
         html = pd.read_html(requests.get(url, headers=headers).text, header=0)
+        # Yahoo = BRK-B, TradingView = BRK.B. Здесь готовим для Yahoo.
         return [t.replace('.', '-') for t in html[0]['Symbol'].tolist()]
     except: return []
 
@@ -80,7 +86,7 @@ def get_financial_info(ticker):
         return i.get('trailingPE') or i.get('forwardPE')
     except: return None
 
-# --- MATH ---
+# --- INDICATORS ---
 def calc_sma(s, l): return s.rolling(l).mean()
 def calc_ema(s, l): return s.ewm(span=l, adjust=False).mean()
 def calc_macd(s, f=12, sl=26, sig=9):
@@ -108,6 +114,7 @@ def calc_atr(df, length):
     tr = pd.concat([h-l, (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1/length, adjust=False).mean()
 
+# --- STRATEGY CORE ---
 def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     df['SMA'] = calc_sma(df['Close'], len_maj)
     adx, p_di, m_di = calc_adx_pine(df, adx_len)
@@ -181,11 +188,14 @@ def analyze_trade(df, idx):
         "SL_Type": "STR" if abs(final_sl - crit) < 0.01 else "ATR"
     }, "OK"
 
-# 4. HELPER FUNCTIONS
+# ==========================================
+# 4. HELPER FUNCTIONS & UI
+# ==========================================
 
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(tz)
+    # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     if now.weekday() >= 5: return False
     start = now.replace(hour=9, minute=30, second=0, microsecond=0)
     end = now.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -209,11 +219,7 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     allowed = get_allowed_users()
     if user_id not in allowed:
-        msg = (
-            f"⛔ <b>Access Denied</b>\n\n"
-            f"ID: <code>{user_id}</code>\n"
-            f"Send ID to: <b>@Vova_Skl</b>"
-        )
+        msg = f"⛔ <b>Access Denied</b>\n\nID: <code>{user_id}</code>\nSend ID to: <b>@Vova_Skl</b>"
         try: await update.message.reply_html(msg)
         except: pass
         return False
@@ -270,7 +276,6 @@ def get_reply_keyboard(p):
     auto_status = "🟢" if p['autoscan'] else "🔴"
     auto_txt = f"Auto Scan {auto_status}"
     
-    # ADDED HELP BUTTON AT THE BOTTOM
     keyboard = [
         [KeyboardButton(risk_txt), KeyboardButton(rr_txt)],
         [KeyboardButton(atr_txt), KeyboardButton(sma_txt)],
@@ -292,36 +297,21 @@ def get_status_text(status="💤 Idle", p=None):
         f"🔍 <b>Filters:</b> {p['tf']} | SMA {p['sma']} | {'Only New' if p['new_only'] else 'All'}"
     )
 
-# --- HELP MESSAGE FUNCTION ---
 def get_help_message():
     return (
         "📚 <b>CONFIGURATION GUIDE</b>\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        "<b>💸 Risk $ (Risk Per Trade)</b>\n"
-        "Maximum dollar amount you are willing to lose if the trade hits Stop Loss.\n"
-        "✅ <i>Range: $10 - $1000+ (Depends on portfolio size)</i>\n\n"
-        
-        "<b>⚖️ RR (Risk/Reward Ratio)</b>\n"
-        "Minimum potential profit relative to risk. E.g., 1.5 means potential gain is 1.5x larger than loss.\n"
-        "✅ <i>Range: 1.5 - 3.0 (Higher is safer)</i>\n\n"
-        
-        "<b>📊 ATR % (Volatility Filter)</b>\n"
-        "Filters out stocks moving too violently. If ATR > Max %, ticker is skipped.\n"
-        "✅ <i>Range: 3% - 10% (Lower = safer stocks)</i>\n\n"
-        
-        "<b>📈 SMA (Trend Filter)</b>\n"
-        "Only shows stocks trading ABOVE this moving average (100, 150, or 200 days).\n"
-        "✅ <i>Recommendation: SMA 200 (Long term trend)</i>\n\n"
-        
-        "<b>✨ Only New Signals</b>\n"
-        "✅: Shows only signals triggered TODAY.\n"
-        "❌: Shows ALL valid setups (even if triggered days ago).\n\n"
-        
-        "<b>🤖 Auto Scan</b>\n"
-        "Checks for NEW signals every hour automatically (9:30-16:00 ET). Never repeats a ticker twice a day."
+        "<b>💸 Risk $</b>: Max dollar loss per trade.\n"
+        "<b>⚖️ RR</b>: Minimum Risk/Reward Ratio (e.g. 1.5).\n"
+        "<b>📊 ATR %</b>: Max volatility allowed.\n"
+        "<b>📈 SMA</b>: Trend filter (Price > SMA).\n"
+        "<b>✨ Only New</b>: \n✅ = Show only fresh signals from TODAY.\n❌ = Show ALL valid signals found.\n"
+        "<b>🤖 Auto Scan</b>: Auto-scans every hour (New signals only)."
     )
 
-# 5. SCAN PROCESS
+# ==========================================
+# 5. SCAN PROCESS (CORRECTED LOGIC)
+# ==========================================
 async def run_scan_process(update, context, p, tickers, manual_input=False, is_auto=False):
     mode_mark = "🤖 AUTO" if is_auto else "🚀 MANUAL"
     start_txt = f"{mode_mark} <b>Scanning Started...</b>"
@@ -334,11 +324,16 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     scan_p = p.copy() 
     user_sent_today = context.user_data.get('sent_today', set())
 
+    # Garbage Collect before start
+    gc.collect()
+
     for i, t in enumerate(tickers):
+        # Stop Check
         if not context.user_data.get('scanning', False) and not manual_input:
             await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
 
+        # Progress Bar & Anti-Flood
         if i % 10 == 0 or i == total - 1:
             pct = int((i + 1) / total * 10)
             bar = "█" * pct + "░" * (10 - pct)
@@ -349,36 +344,61 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
                     parse_mode='HTML'
                 )
             except: pass
+            
+        # Memory Cleanup
+        if i % 50 == 0: gc.collect()
 
         try:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.01) # Yield to event loop
+            
             inter = "1d" if scan_p['tf'] == "Daily" else "1wk"
             fetch_period = "2y" if scan_p['tf'] == "Daily" else "5y"
-            df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
+            
+            # --- DATA FETCHING (MATCHING WEB EXACTLY) ---
+            df = yf.download(
+                t, 
+                period=fetch_period, 
+                interval=inter, 
+                progress=False, 
+                auto_adjust=False, 
+                multi_level_index=False
+            )
             
             if len(df) < scan_p['sma'] + 5:
                 if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: NO DATA")
                 continue
 
+            # --- LOGIC ---
             df = run_vova_logic(df, scan_p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
+            
+            # 1. Check if CURRENT candle is valid
             valid, d, reason = analyze_trade(df, -1)
             
             if not valid:
                 if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: {reason}")
                 continue
 
+            # 2. Check if PREVIOUS candle was valid (to determine if "New")
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
+            # --- FILTERING LOGIC ---
             if is_auto:
-                if not is_new: continue 
-                if t in user_sent_today: continue
+                # AUTO: STRICT MODE
+                if not is_new: continue         # Must be new today
+                if t in user_sent_today: continue # Must not be sent today
             else:
+                # MANUAL: CONFIG MODE
+                # If "Only New" is ON -> Must be new
+                # If "Only New" is OFF -> Show everything (even old active trades)
                 if not manual_input and scan_p['new_only'] and not is_new: continue
+                # We IGNORE user_sent_today in manual mode (show again)
             
+            # 3. Parameters
             if d['RR'] < scan_p['min_rr']: continue
             if (d['ATR']/d['P'])*100 > scan_p['max_atr']: continue
             
+            # 4. Position Sizing
             risk_per_share = d['P'] - d['SL']
             if risk_per_share <= 0: continue
             shares = int(scan_p['risk_usd'] / risk_per_share)
@@ -386,18 +406,22 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
                 if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: Risk too low")
                 continue
             
+            # --- FOUND ---
             pe = get_financial_info(t)
             card = format_luxury_card(t, d, shares, is_new, pe, scan_p['risk_usd'])
             
             await context.bot.send_message(chat_id=chat_id, text=card, parse_mode=constants.ParseMode.HTML, disable_web_page_preview=True)
             
+            # Add to history only if auto
             if is_auto: 
                 user_sent_today.add(t)
                 context.user_data['sent_today'] = user_sent_today
                 
             results_found += 1
             
-        except: pass
+        except Exception as e:
+            # print(f"Err {t}: {e}")
+            pass
 
     global last_scan_time
     last_scan_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -414,7 +438,9 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     if not is_auto:
         await context.bot.send_message(chat_id=chat_id, text=get_status_text("Ready", p), reply_markup=get_reply_keyboard(p), parse_mode='HTML')
 
+# ==========================================
 # 6. HANDLERS
+# ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
     p = await safe_get_params(context)
@@ -442,7 +468,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     p = await safe_get_params(context)
     
-    # --- BUTTON LOGIC ---
     if text == "▶️ START SCAN":
         if context.user_data.get('scanning'): 
             await update.message.reply_text("⚠️ Scan already running!")
@@ -457,7 +482,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🛑 Stopping...")
         return
 
-    # --- HELP BUTTON HANDLER ---
     elif text == "ℹ️ HELP / INFO":
         await update.message.reply_html(get_help_message())
         return
@@ -499,7 +523,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✏️ Enter Max ATR % (e.g., 5.0):")
         return
 
-    # --- NUMBER INPUT ---
+    # Numeric Input
     elif context.user_data.get('input_mode'):
         try:
             val = float(text.replace(',', '.'))
@@ -513,7 +537,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid number. Try again.")
             return
 
-    # --- MANUAL TICKER INPUT ---
+    # Manual Ticker Scan
     elif "," in text or (text.isalpha() and len(text) < 6):
         ts = [x.strip().upper() for x in text.split(",") if x.strip()]
         if ts:
@@ -521,7 +545,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await run_scan_process(update, context, p, ts, manual_input=True)
         return
 
-    # SAVE & REFRESH
     context.user_data['params'] = p
     await update.message.reply_text(get_status_text("Ready", p), reply_markup=get_reply_keyboard(p), parse_mode='HTML')
 
