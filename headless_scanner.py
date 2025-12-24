@@ -182,6 +182,7 @@ def analyze_trade(df, idx):
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(tz)
+    # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     if now.weekday() >= 5: return False
     start = now.replace(hour=9, minute=30, second=0, microsecond=0)
     end = now.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -205,13 +206,16 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     allowed = get_allowed_users()
     if user_id not in allowed:
+        # --- НОВОЕ СООБЩЕНИЕ ДЛЯ НЕЗНАКОМЦЕВ ---
         msg = (
-            f"⛔ <b>Доступ запрещен.</b>\n\n"
-            f"Ваш Telegram ID: <code>{user_id}</code>\n"
-            f"Чтобы получить доступ, отправьте этот ID администратору:\n"
+            f"⛔ <b>Доступ запрещен / Access Denied</b>\n\n"
+            f"🆔 Ваш ID: <code>{user_id}</code>\n\n"
+            f"📩 Отправьте этот ID администратору для активации:\n"
             f"👉 <b>@Vova_Skl</b>"
         )
-        await update.message.reply_html(msg)
+        try:
+            await update.message.reply_html(msg)
+        except: pass
         return False
     return True
 
@@ -562,9 +566,12 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
     
     print("Bot started...")
+    
+    # ЗАЩИТА ОТ КОНФЛИКТА
     try:
         application.run_polling(stop_signals=None, close_loop=False)
     except telegram.error.Conflict:
-        st.error("⚠️ КОНФЛИКТ: Закройте другие вкладки и перезагрузите (Reboot).")
+        # Просто пишем в лог, не падаем
+        st.error("⚠️ Bot is already running in another instance. Please REBOOT APP in menu.")
     except Exception as e:
-        st.error(f"Критическая ошибка: {e}")
+        st.error(f"Critical Error: {e}")
