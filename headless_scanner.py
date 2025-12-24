@@ -17,6 +17,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     filters,
+    PicklePersistence # <--- ДЛЯ СОХРАНЕНИЯ НАСТРОЕК
 )
 
 # --- КОНФИГУРАЦИЯ ---
@@ -30,24 +31,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# 1. ЗАГРУЗКА СЕКРЕТОВ (STREAMLIT CLOUD)
+# 1. ЗАГРУЗКА СЕКРЕТОВ
 # ==========================================
 try:
     TG_TOKEN = st.secrets["TG_TOKEN"]
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
-    # Ссылка на список разрешенных ID (raw text), если есть
     GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "")
 except Exception as e:
-    st.error(f"❌ Ошибка загрузки секретов! Проверьте .streamlit/secrets.toml или Settings в облаке.\nОшибка: {e}")
+    st.error(f"❌ Ошибка секретов: {e}")
     st.stop()
 
 # ==========================================
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 # ==========================================
-ACTIVE_USERS = set()
-ACTIVE_USERS.add(ADMIN_ID)
+# ACTIVE_USERS не нужен глобально для persistence, он будет в user_data
 last_scan_time = "Никогда"
-sent_today = set()  # Для автоскана, чтобы не повторяться за день
+sent_today = set()
 
 # Константы индикаторов
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
@@ -65,9 +64,8 @@ DEFAULT_PARAMS = {
 }
 
 # ==========================================
-# 3. ЛОГИКА СКРИНЕРА (MATH & DATA)
+# 3. ЛОГИКА СКРИНЕРА (100% COPY)
 # ==========================================
-
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
@@ -75,9 +73,7 @@ def get_sp500_tickers():
         headers = {"User-Agent": "Mozilla/5.0"}
         html = pd.read_html(requests.get(url, headers=headers).text, header=0)
         return [t.replace('.', '-') for t in html[0]['Symbol'].tolist()]
-    except Exception as e:
-        logger.error(f"Error S&P500: {e}")
-        return []
+    except: return []
 
 def get_financial_info(ticker):
     try:
@@ -86,7 +82,7 @@ def get_financial_info(ticker):
         return i.get('trailingPE') or i.get('forwardPE')
     except: return None
 
-# --- INDICATOR MATH ---
+# --- MATH ---
 def calc_sma(s, l): return s.rolling(l).mean()
 def calc_ema(s, l): return s.ewm(span=l, adjust=False).mean()
 def calc_macd(s, f=12, sl=26, sig=9):
@@ -99,13 +95,10 @@ def calc_adx_pine(df, length):
     h, l, c = df['High'], df['Low'], df['Close']
     pc = c.shift(1)
     tr = pd.concat([h-l, (h-pc).abs(), (l-pc).abs()], axis=1).max(axis=1)
-    
     up = h - h.shift(1); down = l.shift(1) - l
     p_dm = np.where((up > down) & (up > 0), up, 0.0)
     m_dm = np.where((down > up) & (down > 0), down, 0.0)
-    
     def rma(s, len): return s.ewm(alpha=1/len, adjust=False).mean()
-    
     tr_s = rma(tr, length).replace(0, np.nan)
     p_di = 100 * (rma(pd.Series(p_dm, index=df.index), length) / tr_s)
     m_di = 100 * (rma(pd.Series(m_dm, index=df.index), length) / tr_s)
@@ -117,57 +110,34 @@ def calc_atr(df, length):
     tr = pd.concat([h-l, (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1/length, adjust=False).mean()
 
-# --- VOVA STRATEGY LOGIC ---
 def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     df['SMA'] = calc_sma(df['Close'], len_maj)
     adx, p_di, m_di = calc_adx_pine(df, adx_len)
-    
-    ema_f = calc_ema(df['Close'], len_fast)
-    ema_s = calc_ema(df['Close'], len_slow)
-    hist = calc_macd(df['Close'])
-    efi = calc_ema(df['Close'].diff() * df['Volume'], len_fast)
+    ema_f = calc_ema(df['Close'], len_fast); ema_s = calc_ema(df['Close'], len_slow)
+    hist = calc_macd(df['Close']); efi = calc_ema(df['Close'].diff() * df['Volume'], len_fast)
     atr = calc_atr(df, atr_len)
     
     n = len(df)
     c_a, h_a, l_a = df['Close'].values, df['High'].values, df['Low'].values
+    seq_st = np.zeros(n, dtype=int); crit_lvl = np.full(n, np.nan)
+    res_peak = np.full(n, np.nan); res_struct = np.zeros(n, dtype=bool)
     
-    seq_st = np.zeros(n, dtype=int)
-    crit_lvl = np.full(n, np.nan)
-    res_peak = np.full(n, np.nan)
-    res_struct = np.zeros(n, dtype=bool)
-    
-    s_state = 0
-    s_crit = np.nan
-    s_h = h_a[0]; s_l = l_a[0]
-    last_pk = np.nan; last_tr = np.nan
-    pk_hh = False; tr_hl = False
+    s_state = 0; s_crit = np.nan; s_h = h_a[0]; s_l = l_a[0]
+    last_pk = np.nan; last_tr = np.nan; pk_hh = False; tr_hl = False
     
     for i in range(1, n):
         c, h, l = c_a[i], h_a[i], l_a[i]
-        prev_st = s_state
-        prev_cr = s_crit
-        prev_sh = s_h
-        prev_sl = s_l
-        
+        prev_st = s_state; prev_cr = s_crit; prev_sh = s_h; prev_sl = s_l
         brk = False
         if prev_st == 1 and not np.isnan(prev_cr): brk = c < prev_cr
         elif prev_st == -1 and not np.isnan(prev_cr): brk = c > prev_cr
-            
         if brk:
             if prev_st == 1:
                 is_hh = True if np.isnan(last_pk) else (prev_sh > last_pk)
-                pk_hh = is_hh
-                last_pk = prev_sh
-                s_state = -1
-                s_h = h; s_l = l
-                s_crit = h
+                pk_hh = is_hh; last_pk = prev_sh; s_state = -1; s_h = h; s_l = l; s_crit = h
             else:
                 is_hl = True if np.isnan(last_tr) else (prev_sl > last_tr)
-                tr_hl = is_hl
-                last_tr = prev_sl
-                s_state = 1
-                s_h = h; s_l = l
-                s_crit = l
+                tr_hl = is_hl; last_tr = prev_sl; s_state = 1; s_h = h; s_l = l; s_crit = l
         else:
             s_state = prev_st
             if s_state == 1:
@@ -182,21 +152,13 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
                 if c > prev_sh: s_state = 1; s_crit = l
                 elif c < prev_sl: s_state = -1; s_crit = h
                 else: s_h = max(prev_sh, h); s_l = min(prev_sl, l)
-        
-        seq_st[i] = s_state
-        crit_lvl[i] = s_crit
-        res_peak[i] = last_pk
-        res_struct[i] = (pk_hh and tr_hl)
+        seq_st[i] = s_state; crit_lvl[i] = s_crit; res_peak[i] = last_pk; res_struct[i] = (pk_hh and tr_hl)
 
     adx_str = adx >= adx_thr
     bull = (adx_str & (p_di > m_di)) & ((ema_f > ema_f.shift(1)) & (ema_s > ema_s.shift(1)) & (hist > hist.shift(1))) & (efi > 0)
     bear = (adx_str & (m_di > p_di)) & ((ema_f < ema_f.shift(1)) & (ema_s < ema_s.shift(1)) & (hist < hist.shift(1))) & (efi < 0)
-    
-    t_st = np.zeros(n, dtype=int)
-    t_st[bull] = 1; t_st[bear] = -1
-    
-    df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak
-    df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
+    t_st = np.zeros(n, dtype=int); t_st[bull] = 1; t_st[bear] = -1
+    df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak; df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
     return df
 
 def analyze_trade(df, idx):
@@ -207,14 +169,10 @@ def analyze_trade(df, idx):
     if r['Trend'] == -1: errs.append("TREND")
     if not r['Struct']: errs.append("STRUCT")
     if np.isnan(r['Peak']) or np.isnan(r['Crit']): errs.append("NO DATA")
-    
     if errs: return False, {}, " ".join(errs)
     
     price = r['Close']; tp = r['Peak']; crit = r['Crit']; atr = r['ATR']
-    sl_struct = crit
-    sl_atr = price - atr
-    final_sl = min(sl_struct, sl_atr)
-    
+    final_sl = min(crit, price - atr)
     risk = price - final_sl; reward = tp - price
     if risk <= 0: return False, {}, "BAD STOP"
     if reward <= 0: return False, {}, "AT TARGET"
@@ -226,7 +184,7 @@ def analyze_trade(df, idx):
     }, "OK"
 
 # ==========================================
-# 4. HELPER FUNCTIONS (UI & AUTH)
+# 4. HELPER FUNCTIONS
 # ==========================================
 
 def is_market_open():
@@ -244,18 +202,19 @@ def get_allowed_users():
         response = requests.get(GITHUB_USERS_URL, timeout=5)
         if response.status_code == 200:
             for line in response.text.splitlines():
-                cl = line.strip()
-                if cl.isdigit(): allowed.add(int(cl))
-    except Exception as e:
-        logger.error(f"Error fetching users: {e}")
+                if line.strip().isdigit(): allowed.add(int(line.strip()))
+    except: pass
     return allowed
 
-async def check_auth(update: Update):
+async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    ACTIVE_USERS.add(user_id)
+    # Сохраняем активных в user_data чтобы они сохранялись в pickle
+    if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
+    context.bot_data['active_users'].add(user_id)
+    
     allowed = get_allowed_users()
     if user_id not in allowed:
-        await update.message.reply_text("⛔ <b>Доступ запрещен.</b>", parse_mode='HTML')
+        await update.message.reply_text("⛔ Доступ запрещен.", parse_mode='HTML')
         return False
     return True
 
@@ -298,11 +257,11 @@ def get_keyboard(p):
             InlineKeyboardButton(new_txt, callback_data="toggle_new"),
         ],
         [
-            InlineKeyboardButton("▶️ START SCAN", callback_data="start_scan"),
-            InlineKeyboardButton("⏹ STOP", callback_data="stop_scan"),
+            InlineKeyboardButton(f"AutoScan: {auto_txt}", callback_data="toggle_auto"),
         ],
         [
-            InlineKeyboardButton(f"AutoScan: {auto_txt}", callback_data="toggle_auto"),
+            InlineKeyboardButton("▶️ START SCAN", callback_data="start_scan"),
+            InlineKeyboardButton("⏹ STOP", callback_data="stop_scan"),
         ]
     ]
     return InlineKeyboardMarkup(kb)
@@ -320,23 +279,59 @@ def get_status_text(status="💤 Ожидание", p=None):
     )
 
 # ==========================================
-# 5. SCAN PROCESS
+# 5. MENUS & UTILS (STICKY BOTTOM)
+# ==========================================
+
+async def refresh_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, p, status="Готов"):
+    """
+    Удаляет старое сообщение и присылает новое внизу.
+    """
+    try:
+        # Пытаемся удалить старое сообщение (если это callback или просто текст)
+        if update.callback_query:
+            await update.callback_query.message.delete()
+        elif update.message:
+            # Не удаляем сообщение пользователя, чтобы он видел что ввел, 
+            # но можно удалить предыдущее сообщение бота если сохранить ID.
+            # Для простоты просто шлем новое.
+            pass
+    except: pass
+    
+    # Шлем новое
+    msg = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=get_status_text(status, p),
+        reply_markup=get_keyboard(p),
+        parse_mode='HTML'
+    )
+    # Можно сохранить msg.message_id в user_data чтобы потом его удалять, 
+    # но это усложнит логику. Пока просто "новое сообщение всегда внизу".
+
+async def safe_get_params(context):
+    """Гарантирует, что параметры не сбросятся"""
+    if 'params' not in context.user_data:
+        context.user_data['params'] = DEFAULT_PARAMS.copy()
+    return context.user_data['params']
+
+# ==========================================
+# 6. SCAN PROCESS
 # ==========================================
 async def run_scan_process(update, context, p, tickers, manual_input=False):
+    # Присылаем сообщение статуса (оно будет висеть внизу во время скана)
     status_msg = await context.bot.send_message(
         chat_id=update.effective_chat.id, 
-        text="🚀 <b>Начинаю сканирование...</b>\n[░░░░░░░░░░] 0%", 
+        text="🚀 <b>Начинаю сканирование...</b>", 
         parse_mode=constants.ParseMode.HTML
     )
     
     results_found = 0
     total = len(tickers)
-    scan_p = p.copy() # Snapshot parameters
+    scan_p = p.copy() 
     
     for i, t in enumerate(tickers):
         if not context.user_data.get('scanning', False) and not manual_input:
             await status_msg.edit_text("⏹ Сканирование остановлено.")
-            return
+            break
 
         if i % 10 == 0 or i == total - 1:
             pct = int((i + 1) / total * 10)
@@ -350,7 +345,7 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
             except: pass
 
         try:
-            await asyncio.sleep(0.01) # Yield
+            await asyncio.sleep(0.01)
             inter = "1d" if scan_p['tf'] == "Daily" else "1wk"
             fetch_period = "2y" if scan_p['tf'] == "Daily" else "5y"
             
@@ -367,30 +362,19 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
                 if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: {reason}")
                 continue
 
-            # Filters
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
             if not manual_input and scan_p['new_only'] and not is_new: continue
             if not manual_input and scan_p.get('is_auto') and t in sent_today: continue
-            
-            if d['RR'] < scan_p['min_rr']:
-                if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: Low RR")
-                continue
-                
-            atr_pct = (d['ATR']/d['P'])*100
-            if atr_pct > scan_p['max_atr']:
-                if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: High Vol")
-                continue
+            if d['RR'] < scan_p['min_rr']: continue
+            if (d['ATR']/d['P'])*100 > scan_p['max_atr']: continue
             
             risk_amt = scan_p['portfolio'] * (scan_p['risk_pct'] / 100.0)
             risk_share = d['P'] - d['SL']
             if risk_share <= 0: continue
-            
             shares = min(int(risk_amt / risk_share), int(scan_p['portfolio'] / d['P']))
-            if shares < 1:
-                if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: Low Funds")
-                continue
+            if shares < 1: continue
             
             pe = get_financial_info(t)
             card = format_luxury_card(t, d, shares, is_new, pe)
@@ -405,51 +389,52 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
             if scan_p.get('is_auto'): sent_today.add(t)
             results_found += 1
             
-        except Exception as e:
-            if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: Error {e}")
+        except: pass
 
     global last_scan_time
     last_scan_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    await status_msg.edit_text(f"✅ <b>Скан завершен!</b> Найдено: {results_found}", parse_mode='HTML')
+    # Удаляем сообщение прогресса
+    try: await status_msg.delete()
+    except: pass
+    
+    # Итоговый отчет
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"✅ <b>Скан завершен!</b> Найдено: {results_found}",
+        parse_mode='HTML'
+    )
     context.user_data['scanning'] = False
     
+    # ВОЗВРАЩАЕМ МЕНЮ ВНИЗ
     if not manual_input and not scan_p.get('is_auto'):
-        await update.effective_message.reply_html(
-            get_status_text("Готов", context.user_data['params']),
-            reply_markup=get_keyboard(context.user_data['params'])
-        )
+        await refresh_menu(update, context, p)
 
 # ==========================================
-# 6. HANDLERS
+# 7. HANDLERS
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update): return
-    if 'params' not in context.user_data: context.user_data['params'] = DEFAULT_PARAMS.copy()
+    if not await check_auth(update, context): return
+    p = await safe_get_params(context)
     context.user_data['scanning'] = False
     context.user_data['input_mode'] = None
     
+    # Первое меню
     await update.message.reply_html(
-        get_status_text(p=context.user_data['params']),
-        reply_markup=get_keyboard(context.user_data['params'])
+        get_status_text(p=p),
+        reply_markup=get_keyboard(p)
     )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ADMIN ONLY
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Доступ запрещен. Только админ.")
-        return
-
+    if update.effective_user.id != ADMIN_ID: return
+    active = context.bot_data.get('active_users', set())
     allowed = get_allowed_users()
     msg = (
-        f"📊 <b>АДМИН-ПАНЕЛЬ</b>\n━━━━━━━━━━━━━━━━\n"
-        f"👑 <b>Admin ID:</b> {ADMIN_ID}\n\n"
-        f"👥 <b>Активных сессий:</b> {len(ACTIVE_USERS)}\n"
-        f"✅ <b>Белый список:</b> {len(allowed)} чел.\n"
-        f"🕒 <b>Посл. скан:</b> {last_scan_time}\n"
-        f"🤖 <b>Автоскан:</b> {'ВКЛ' if context.user_data.get('params',{}).get('autoscan') else 'ВЫКЛ'}\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"📜 <b>ID Активных:</b>\n<code>{list(ACTIVE_USERS)}</code>"
+        f"📊 <b>АДМИН</b>\n"
+        f"Активных: {len(active)}\n"
+        f"Whitelist: {len(allowed)}\n"
+        f"Скан: {last_scan_time}\n"
+        f"IDs: {list(active)}"
     )
     await update.message.reply_html(msg)
 
@@ -457,8 +442,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    p = context.user_data.get('params', DEFAULT_PARAMS)
+    p = await safe_get_params(context)
     
+    # Обработка кнопок
     if data == "toggle_tf": p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
     elif data == "toggle_new": p['new_only'] = not p['new_only']
     elif data == "toggle_auto":
@@ -466,10 +452,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if p['autoscan']:
             chat_id = update.effective_chat.id
             context.job_queue.run_repeating(auto_scan_job, interval=3600, first=10, chat_id=chat_id, user_id=ADMIN_ID, name=str(chat_id))
-            await query.message.reply_text("🤖 Автоскан ВКЛ (каждый час).")
+            await context.bot.send_message(chat_id, "🤖 Автоскан ВКЛ.")
         else:
             for job in context.job_queue.get_jobs_by_name(str(update.effective_chat.id)): job.schedule_removal()
-            await query.message.reply_text("🤖 Автоскан ВЫКЛ.")
+            await context.bot.send_message(update.effective_chat.id, "🤖 Автоскан ВЫКЛ.")
             
     elif data == "set_sma":
         opts = [100, 150, 200]
@@ -478,32 +464,38 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif data == "start_scan":
         if context.user_data.get('scanning'):
-            await query.message.reply_text("⚠️ Уже идет сканирование.")
+            await context.bot.send_message(update.effective_chat.id, "⚠️ Уже сканирую!")
             return
         context.user_data['scanning'] = True
+        
+        # Удаляем старое меню перед сканом
+        try: await query.message.delete()
+        except: pass
+        
         tickers = get_sp500_tickers()
         asyncio.create_task(run_scan_process(update, context, p, tickers))
-        return
+        return # Выход, меню будет отправлено в конце скана
 
     elif data == "stop_scan":
         context.user_data['scanning'] = False
-        await query.message.reply_text("🛑 Остановка...")
+        await context.bot.send_message(update.effective_chat.id, "🛑 Остановка...")
         return
 
     elif data in ["set_port", "set_rr", "set_risk", "set_matr"]:
         context.user_data['input_mode'] = data
-        await query.message.reply_text(f"✏️ Введите значение:", parse_mode='HTML')
+        try: await query.message.delete()
+        except: pass
+        await context.bot.send_message(update.effective_chat.id, f"✏️ Введите значение:", parse_mode='HTML')
         return
 
-    try:
-        await query.message.edit_text(get_status_text("Настройка", p), reply_markup=get_keyboard(p), parse_mode='HTML')
-    except: pass
+    # ОБНОВЛЕНИЕ МЕНЮ (Удалить старое -> Прислать новое)
+    await refresh_menu(update, context, p)
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update): return
+    if not await check_auth(update, context): return
+    p = await safe_get_params(context)
     txt = update.message.text.strip()
     mode = context.user_data.get('input_mode')
-    p = context.user_data.get('params', DEFAULT_PARAMS)
     
     if not mode:
         if "," in txt or (txt.isalpha() and len(txt)<6):
@@ -520,7 +512,10 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif mode == "set_risk": p['risk_pct'] = max(0.2, val)
         elif mode == "set_matr": p['max_atr'] = val
         context.user_data['input_mode'] = None
-        await update.message.reply_html(f"✅ OK.\n" + get_status_text("Готов", p), reply_markup=get_keyboard(p))
+        
+        # Шлем новое меню вниз
+        await refresh_menu(update, context, p, status="Параметр обновлен")
+        
     except: await update.message.reply_text("❌ Введите число.")
 
 async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
@@ -528,27 +523,32 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     global sent_today
     now = datetime.datetime.now(pytz.timezone('US/Eastern'))
     if now.hour == 9 and now.minute < 5: sent_today.clear()
-    
     if not is_market_open(): return 
     
     class Dummy: pass
     u = Dummy(); u.effective_chat = Dummy(); u.effective_chat.id = job.chat_id
     
-    # Пытаемся взять параметры админа
-    p = context.application.user_data.get(job.user_id, {}).get('params', DEFAULT_PARAMS).copy()
+    # Пытаемся восстановить параметры из persistence
+    if 'params' not in context.application.user_data.get(job.user_id, {}):
+         context.application.user_data.setdefault(job.user_id, {})['params'] = DEFAULT_PARAMS.copy()
+    
+    p = context.application.user_data[job.user_id]['params'].copy()
     p['is_auto'] = True
     
     await context.bot.send_message(job.chat_id, "🤖 <b>Автоскан...</b>", parse_mode='HTML')
     await run_scan_process(u, context, p, get_sp500_tickers())
 
 # ==========================================
-# 7. MAIN EXECUTION
+# 8. MAIN EXECUTION
 # ==========================================
 if __name__ == '__main__':
     st.title("💎 Vova Screener Bot Running")
-    st.write("Бот активен. Перейдите в Telegram.")
+    st.write("Бот запущен с защитой настроек.")
     
-    application = ApplicationBuilder().token(TG_TOKEN).build()
+    # Persistence сохраняет данные в файл 'bot_data.pickle'
+    my_persistence = PicklePersistence(filepath='bot_data.pickle')
+    
+    application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('stats', stats_command))
@@ -557,8 +557,6 @@ if __name__ == '__main__':
     
     print("Bot started...")
     try:
-        # stop_signals=None ВАЖНО для Streamlit
-        # close_loop=False помогает при перезагрузках
         application.run_polling(stop_signals=None, close_loop=False)
     except Exception as e:
         st.error(f"Critical Error: {e}")
