@@ -8,6 +8,7 @@ import pandas as pd
 import yfinance as yf
 import nest_asyncio
 import streamlit as st
+import os
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import (
@@ -40,14 +41,15 @@ except Exception as e:
 
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 last_scan_time = "Никогда"
+next_scan_time = "Не запланировано" # Для отображения на сайте
 sent_today = set()
 
 # Индикаторы
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
-# --- НОВЫЕ ДЕФОЛТНЫЕ ПАРАМЕТРЫ ---
+# ДЕФОЛТНЫЕ ПАРАМЕТРЫ
 DEFAULT_PARAMS = {
-    'risk_usd': 50.0,   # Риск на сделку в долларах (ВМЕСТО % и Портфеля)
+    'risk_usd': 50.0,
     'min_rr': 1.25,
     'max_atr': 5.0,
     'sma': 200,
@@ -56,7 +58,7 @@ DEFAULT_PARAMS = {
     'autoscan': False,
 }
 
-# 3. ЛОГИКА СКРИНЕРА
+# 3. ЛОГИКА СКРИНЕРА (100% COPY)
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
@@ -220,7 +222,7 @@ def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     pe_str = f"| P/E: <b>{pe_val:.0f}</b>" if pe_val else ""
     val_pos = shares * d['P']
     profit = (d['TP'] - d['P']) * shares
-    loss = (d['P'] - d['SL']) * shares # Should be approx risk_usd
+    loss = (d['P'] - d['SL']) * shares
     atr_pct = (d['ATR'] / d['P']) * 100
     
     return (
@@ -238,10 +240,8 @@ def get_keyboard(p):
     new_txt = "🆕 On" if p['new_only'] else "🆕 Off"
     auto_txt = "🤖 On" if p['autoscan'] else "🤖 Off"
     
-    # --- ОБНОВЛЕННАЯ КЛАВИАТУРА ---
     kb = [
         [
-            # Кнопка РИСК В ДОЛЛАРАХ
             InlineKeyboardButton(f"💸 Risk: ${p['risk_usd']:.0f}", callback_data="set_risk_usd"),
             InlineKeyboardButton(f"⚖️ RR: {p['min_rr']}", callback_data="set_rr"),
         ],
@@ -273,10 +273,9 @@ def get_status_text(status="💤 Ожидание", p=None):
     )
 
 async def refresh_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, p, status="Готов"):
-    """Удаляет старое и шлет новое меню внизу."""
     chat_id = update.effective_chat.id
     
-    # Пытаемся удалить старое меню (если сохранили его ID)
+    # Удаляем старое меню
     last_id = context.user_data.get('last_menu_id')
     if last_id:
         try: await context.bot.delete_message(chat_id, last_id)
@@ -290,14 +289,14 @@ async def refresh_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, p, st
     )
     context.user_data['last_menu_id'] = msg.message_id
 
-# 5. SCAN PROCESS
-async def run_scan_process(update, context, p, tickers, manual_input=False):
-    # Добавляем кнопку STOP прямо к прогресс-бару
+# 5. SCAN PROCESS (UNIFIED FOR AUTO AND MANUAL)
+async def run_scan_process(update, context, p, tickers, manual_input=False, is_auto=False):
+    # При автоскане добавляем плашку с кнопкой
     stop_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏹ STOP SCAN", callback_data="stop_scan")]])
     
     status_msg = await context.bot.send_message(
         chat_id=update.effective_chat.id, 
-        text="🚀 <b>Начинаю сканирование...</b>", 
+        text="🚀 <b>Начинаю сканирование...</b>" if not is_auto else "🤖 <b>Автоскан запущен...</b>", 
         parse_mode=constants.ParseMode.HTML,
         reply_markup=stop_kb
     )
@@ -307,26 +306,26 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
     scan_p = p.copy() 
     
     for i, t in enumerate(tickers):
-        # Проверка флага остановки
+        # Проверка остановки
         if not context.user_data.get('scanning', False) and not manual_input:
             await status_msg.edit_text("⏹ Сканирование остановлено.")
             break
 
-        # Обновление прогресс-бара
+        # Прогресс бар
         if i % 10 == 0 or i == total - 1:
             pct = int((i + 1) / total * 10)
             bar = "█" * pct + "░" * (10 - pct)
             try:
                 await status_msg.edit_text(
-                    f"🚀 <b>Scanning:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n"
+                    f"{'🚀' if not is_auto else '🤖'} <b>Scan:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n"
                     f"<i>SMA{scan_p['sma']} | {scan_p['tf']}</i>", 
                     parse_mode='HTML',
-                    reply_markup=stop_kb # Кнопка STOP всегда тут
+                    reply_markup=stop_kb
                 )
             except: pass
 
         try:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.01) # Yield
             inter = "1d" if scan_p['tf'] == "Daily" else "1wk"
             fetch_period = "2y" if scan_p['tf'] == "Daily" else "5y"
             
@@ -346,18 +345,23 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
-            if not manual_input and scan_p['new_only'] and not is_new: continue
-            if not manual_input and scan_p.get('is_auto') and t in sent_today: continue
+            # --- ЛОГИКА АВТОСКАНА (ЖЕСТКАЯ) ---
+            if is_auto:
+                # 1. Только новые сигналы ВСЕГДА для автоскана
+                if not is_new: continue
+                # 2. Не повторять сегодня
+                if t in sent_today: continue
+            else:
+                # Для ручного режима слушаем настройки
+                if not manual_input and scan_p['new_only'] and not is_new: continue
+            
+            # Остальные фильтры
             if d['RR'] < scan_p['min_rr']: continue
             if (d['ATR']/d['P'])*100 > scan_p['max_atr']: continue
             
-            # --- НОВАЯ ЛОГИКА РИСКА В $ ---
             risk_per_share = d['P'] - d['SL']
             if risk_per_share <= 0: continue
-            
-            # Покупаем столько, чтобы риск был равен risk_usd
             shares = int(scan_p['risk_usd'] / risk_per_share)
-            
             if shares < 1: 
                 if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: Stop too close/Risk too low")
                 continue
@@ -365,7 +369,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
             pe = get_financial_info(t)
             card = format_luxury_card(t, d, shares, is_new, pe, scan_p['risk_usd'])
             
-            # Отправляем карточку
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=card,
@@ -373,11 +376,11 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
                 disable_web_page_preview=True
             )
             
-            # ПЕРЕПОСЫЛАЕМ МЕНЮ, ЧТОБЫ ОНО БЫЛО ВНИЗУ
-            if not manual_input and not scan_p.get('is_auto'):
+            # Обновляем меню внизу только если не авто (чтобы не спамить при автоскане каждым сигналом)
+            if not is_auto and not manual_input:
                 await refresh_menu(update, context, p, status="Идет сканирование...")
             
-            if scan_p.get('is_auto'): sent_today.add(t)
+            if is_auto: sent_today.add(t)
             results_found += 1
             
         except: pass
@@ -390,12 +393,13 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
     
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"✅ <b>Скан завершен!</b> Найдено: {results_found}",
+        text=f"✅ <b>{'Авто' if is_auto else 'Ручной'} Скан завершен!</b> Найдено: {results_found}",
         parse_mode='HTML'
     )
     context.user_data['scanning'] = False
     
-    if not manual_input and not scan_p.get('is_auto'):
+    # Возвращаем меню, если это был ручной скан
+    if not is_auto and not manual_input:
         await refresh_menu(update, context, p)
 
 # 6. HANDLERS
@@ -410,7 +414,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     active = context.bot_data.get('active_users', set())
     allowed = get_allowed_users()
-    msg = f"📊 <b>АДМИН</b>\nАктивных: {len(active)}\nWhitelist: {len(allowed)}\nСкан: {last_scan_time}\nIDs: {list(active)}"
+    msg = f"📊 <b>АДМИН</b>\nАктивных: {len(active)}\nWhitelist: {len(allowed)}\nСкан: {last_scan_time}\nAuto Next: {next_scan_time}"
     await update.message.reply_html(msg)
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -426,11 +430,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p['autoscan'] = not p['autoscan']
         if p['autoscan']:
             chat_id = update.effective_chat.id
+            # Запускаем джоб раз в час (3600 сек)
             context.job_queue.run_repeating(auto_scan_job, interval=3600, first=10, chat_id=chat_id, user_id=ADMIN_ID, name=str(chat_id))
             await context.bot.send_message(chat_id, "🤖 Автоскан ВКЛ.")
         else:
             for job in context.job_queue.get_jobs_by_name(str(update.effective_chat.id)): job.schedule_removal()
             await context.bot.send_message(update.effective_chat.id, "🤖 Автоскан ВЫКЛ.")
+            global next_scan_time
+            next_scan_time = "Остановлен"
             
     elif data == "set_sma":
         opts = [100, 150, 200]
@@ -446,15 +453,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "stop_scan":
         context.user_data['scanning'] = False
+        # Для автоскана тоже сработает, так как контекст общий
         await context.bot.send_message(update.effective_chat.id, "🛑 Остановка...")
         return
 
-    # ОБРАБОТКА ВВОДА ДЛЯ РИСКА В $
     elif data in ["set_risk_usd", "set_rr", "set_matr"]:
         context.user_data['input_mode'] = data
         try: await query.message.delete()
         except: pass
-        
         lbl = "Риск в $ (например 50)" if data == "set_risk_usd" else "Значение"
         await context.bot.send_message(update.effective_chat.id, f"✏️ Введите {lbl}:", parse_mode='HTML')
         return
@@ -478,7 +484,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         val = float(txt.replace(',', '.'))
-        if mode == "set_risk_usd": p['risk_usd'] = max(1.0, val) # Минимум 1 доллар
+        if mode == "set_risk_usd": p['risk_usd'] = max(1.0, val)
         elif mode == "set_rr": p['min_rr'] = max(1.25, val)
         elif mode == "set_matr": p['max_atr'] = val
         context.user_data['input_mode'] = None
@@ -490,10 +496,21 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
-    global sent_today
-    now = datetime.datetime.now(pytz.timezone('US/Eastern'))
-    if now.hour == 9 and now.minute < 5: sent_today.clear()
-    if not is_market_open(): return 
+    global sent_today, next_scan_time
+    
+    # Расчет следующего времени (примерно)
+    utc_now = datetime.datetime.now(pytz.utc)
+    next_run = utc_now + datetime.timedelta(seconds=3600)
+    ny_tz = pytz.timezone('US/Eastern')
+    next_scan_time = next_run.astimezone(ny_tz).strftime("%H:%M ET")
+    
+    # Сброс кэша тикеров утром
+    now_ny = datetime.datetime.now(ny_tz)
+    if now_ny.hour == 9 and now_ny.minute < 5: sent_today.clear()
+    
+    if not is_market_open(): 
+        next_scan_time = "Рынок закрыт"
+        return 
     
     class Dummy: pass
     u = Dummy(); u.effective_chat = Dummy(); u.effective_chat.id = job.chat_id
@@ -502,15 +519,23 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
          context.application.user_data.setdefault(job.user_id, {})['params'] = DEFAULT_PARAMS.copy()
     
     p = context.application.user_data[job.user_id]['params'].copy()
-    p['is_auto'] = True
     
-    await context.bot.send_message(job.chat_id, "🤖 <b>Автоскан...</b>", parse_mode='HTML')
-    await run_scan_process(u, context, p, get_sp500_tickers())
+    # Флаг старта сканирования для кнопки STOP
+    context.application.user_data[job.user_id]['scanning'] = True
+    
+    # is_auto=True включает жесткие фильтры (New Only + No Duplicates)
+    await run_scan_process(u, context, p, get_sp500_tickers(), is_auto=True)
 
 # 7. MAIN
 if __name__ == '__main__':
-    st.title("💎 Vova Screener Bot Running")
-    st.write("Bot is live.")
+    st.set_page_config(page_title="Vova Bot Status", page_icon="🤖")
+    st.title("💎 Vova Screener Bot")
+    
+    # Отображение времени на сайте
+    st.metric(label="Next Auto-Scan (Approx)", value=next_scan_time)
+    
+    st.write("Бот работает в фоне. Перейдите в Telegram.")
+    
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
