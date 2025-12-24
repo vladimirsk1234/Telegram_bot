@@ -18,6 +18,24 @@ from telegram.ext import (
     filters,
 )
 
+try:
+    # Streamlit Cloud автоматически загружает secrets из настроек
+    TG_TOKEN = st.secrets["TG_TOKEN"]
+    # Превращаем ID в число, так как Telegram требует int
+    ADMIN_ID = int(st.secrets["ADMIN_ID"])
+    
+    # Если используете GITHUB_USERS_URL, раскомментируйте:
+    # GITHUB_USERS_URL = st.secrets["GITHUB_USERS_URL"] 
+    
+except KeyError as e:
+    st.error(f"❌ Ошибка конфигурации: Секрет {e} не найден! Добавьте его в настройках Streamlit Cloud.")
+    st.stop()
+except Exception as e:
+    st.error(f"❌ Ошибка загрузки секретов: {e}")
+    st.stop()
+
+
+
 # --- KONFIGURACIJA ---
 nest_asyncio.apply()
 
@@ -662,6 +680,7 @@ if __name__ == '__main__':
     
     print("Bot is running...")
     application.run_polling(stop_signals=None)
+
 
 
 
