@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import nest_asyncio
+import streamlit as st
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import (
     ApplicationBuilder,
@@ -661,5 +662,6 @@ if __name__ == '__main__':
     
     print("Bot is running...")
     application.run_polling(stop_signals=None)
+
 
 
