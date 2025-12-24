@@ -47,12 +47,12 @@ except Exception as e:
     st.stop()
 
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-last_scan_time = "Никогда"
+last_scan_time = "Never"
 
-# Индикаторы (Настройки Pine Script)
+# Индикаторы
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
-# ДЕФОЛТНЫЕ ПАРАМЕТРЫ (Используются только если память пуста)
+# ДЕФОЛТНЫЕ ПАРАМЕТРЫ
 DEFAULT_PARAMS = {
     'risk_usd': 50.0,
     'min_rr': 1.25,
@@ -63,7 +63,7 @@ DEFAULT_PARAMS = {
     'autoscan': False,
 }
 
-# 3. ЛОГИКА СКРИНЕРА (100% IDENTICAL TO WEB)
+# 3. ЛОГИКА СКРИНЕРА
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
@@ -186,7 +186,6 @@ def analyze_trade(df, idx):
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(tz)
-    # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     if now.weekday() >= 5: return False
     start = now.replace(hour=9, minute=30, second=0, microsecond=0)
     end = now.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -221,27 +220,14 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return True
 
 async def safe_get_params(context):
-    """
-    Восстановление параметров.
-    Приоритет: 
-    1. То, что уже есть в памяти (context.user_data['params'])
-    2. Дефолтные значения (если ключа нет)
-    """
-    # Инициализация словаря, если его нет
     if 'params' not in context.user_data:
         context.user_data['params'] = DEFAULT_PARAMS.copy()
-    
-    # "Ремонт" параметров: если после обновления кода появились новые ключи,
-    # добавляем их к существующим настройкам пользователя, не сбрасывая старые.
-    current_params = context.user_data['params']
-    for key, default_val in DEFAULT_PARAMS.items():
-        if key not in current_params:
-            current_params[key] = default_val
-            
-    # Сохраняем обновленный словарь обратно
-    context.user_data['params'] = current_params
-    
-    # Инициализация кэша отправленных
+    else:
+        current = context.user_data['params']
+        new_params = DEFAULT_PARAMS.copy()
+        new_params.update(current)
+        context.user_data['params'] = new_params
+                
     if 'sent_today' not in context.user_data:
         context.user_data['sent_today'] = set()
         
@@ -284,12 +270,14 @@ def get_reply_keyboard(p):
     auto_status = "🟢" if p['autoscan'] else "🔴"
     auto_txt = f"Auto Scan {auto_status}"
     
+    # ADDED HELP BUTTON AT THE BOTTOM
     keyboard = [
         [KeyboardButton(risk_txt), KeyboardButton(rr_txt)],
         [KeyboardButton(atr_txt), KeyboardButton(sma_txt)],
         [KeyboardButton(tf_txt), KeyboardButton(new_txt)], 
         [KeyboardButton(auto_txt)],
-        [KeyboardButton("▶️ START SCAN"), KeyboardButton("⏹ STOP SCAN")]
+        [KeyboardButton("▶️ START SCAN"), KeyboardButton("⏹ STOP SCAN")],
+        [KeyboardButton("ℹ️ HELP / INFO")] 
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
@@ -304,19 +292,42 @@ def get_status_text(status="💤 Idle", p=None):
         f"🔍 <b>Filters:</b> {p['tf']} | SMA {p['sma']} | {'Only New' if p['new_only'] else 'All'}"
     )
 
+# --- HELP MESSAGE FUNCTION ---
+def get_help_message():
+    return (
+        "📚 <b>CONFIGURATION GUIDE</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>💸 Risk $ (Risk Per Trade)</b>\n"
+        "Maximum dollar amount you are willing to lose if the trade hits Stop Loss.\n"
+        "✅ <i>Range: $10 - $1000+ (Depends on portfolio size)</i>\n\n"
+        
+        "<b>⚖️ RR (Risk/Reward Ratio)</b>\n"
+        "Minimum potential profit relative to risk. E.g., 1.5 means potential gain is 1.5x larger than loss.\n"
+        "✅ <i>Range: 1.5 - 3.0 (Higher is safer)</i>\n\n"
+        
+        "<b>📊 ATR % (Volatility Filter)</b>\n"
+        "Filters out stocks moving too violently. If ATR > Max %, ticker is skipped.\n"
+        "✅ <i>Range: 3% - 10% (Lower = safer stocks)</i>\n\n"
+        
+        "<b>📈 SMA (Trend Filter)</b>\n"
+        "Only shows stocks trading ABOVE this moving average (100, 150, or 200 days).\n"
+        "✅ <i>Recommendation: SMA 200 (Long term trend)</i>\n\n"
+        
+        "<b>✨ Only New Signals</b>\n"
+        "✅: Shows only signals triggered TODAY.\n"
+        "❌: Shows ALL valid setups (even if triggered days ago).\n\n"
+        
+        "<b>🤖 Auto Scan</b>\n"
+        "Checks for NEW signals every hour automatically (9:30-16:00 ET). Never repeats a ticker twice a day."
+    )
+
 # 5. SCAN PROCESS
 async def run_scan_process(update, context, p, tickers, manual_input=False, is_auto=False):
-    # --- MARKER: MANUAL or AUTO ---
     mode_mark = "🤖 AUTO" if is_auto else "🚀 MANUAL"
-    
     start_txt = f"{mode_mark} <b>Scanning Started...</b>"
     chat_id = update.effective_chat.id
     
-    status_msg = await context.bot.send_message(
-        chat_id=chat_id, 
-        text=start_txt, 
-        parse_mode=constants.ParseMode.HTML
-    )
+    status_msg = await context.bot.send_message(chat_id=chat_id, text=start_txt, parse_mode=constants.ParseMode.HTML)
     
     results_found = 0
     total = len(tickers)
@@ -343,7 +354,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             await asyncio.sleep(0.01)
             inter = "1d" if scan_p['tf'] == "Daily" else "1wk"
             fetch_period = "2y" if scan_p['tf'] == "Daily" else "5y"
-            
             df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
             
             if len(df) < scan_p['sma'] + 5:
@@ -379,12 +389,7 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             pe = get_financial_info(t)
             card = format_luxury_card(t, d, shares, is_new, pe, scan_p['risk_usd'])
             
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=card,
-                parse_mode=constants.ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+            await context.bot.send_message(chat_id=chat_id, text=card, parse_mode=constants.ParseMode.HTML, disable_web_page_preview=True)
             
             if is_auto: 
                 user_sent_today.add(t)
@@ -397,7 +402,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     global last_scan_time
     last_scan_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # --- END NOTIFICATION ---
     final_txt = (
         f"🏁 <b>{mode_mark} SCAN COMPLETE</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -408,12 +412,7 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     context.user_data['scanning'] = False
     
     if not is_auto:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=get_status_text("Ready", p),
-            reply_markup=get_reply_keyboard(p),
-            parse_mode='HTML'
-        )
+        await context.bot.send_message(chat_id=chat_id, text=get_status_text("Ready", p), reply_markup=get_reply_keyboard(p), parse_mode='HTML')
 
 # 6. HANDLERS
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -422,18 +421,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['scanning'] = False
     context.user_data['input_mode'] = None
     
-    # --- WELCOME MESSAGE ---
     welcome_txt = (
         f"👋 <b>Welcome, {update.effective_user.first_name}!</b>\n\n"
         f"💎 <b>Vova Screener Bot</b> is ready.\n"
         f"Use the menu below to configure parameters and start scanning.\n\n"
         f"<i>Tap 'Start Scan' to begin.</i>"
     )
-    
-    await update.message.reply_html(
-        welcome_txt,
-        reply_markup=get_reply_keyboard(p)
-    )
+    await update.message.reply_html(welcome_txt, reply_markup=get_reply_keyboard(p))
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -463,13 +457,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🛑 Stopping...")
         return
 
+    # --- HELP BUTTON HANDLER ---
+    elif text == "ℹ️ HELP / INFO":
+        await update.message.reply_html(get_help_message())
+        return
+
     # Toggles
     elif "Daily" in text or "Weekly" in text:
         p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
-    
     elif "Only New signals" in text:
         p['new_only'] = not p['new_only']
-        
     elif "Auto Scan" in text:
         p['autoscan'] = not p['autoscan']
         chat_id = update.effective_chat.id
@@ -526,11 +523,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # SAVE & REFRESH
     context.user_data['params'] = p
-    await update.message.reply_text(
-        get_status_text("Ready", p),
-        reply_markup=get_reply_keyboard(p),
-        parse_mode='HTML'
-    )
+    await update.message.reply_text(get_status_text("Ready", p), reply_markup=get_reply_keyboard(p), parse_mode='HTML')
 
 async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
@@ -566,15 +559,11 @@ if __name__ == '__main__':
     with c1: st.metric("USA Market", "OPEN" if market_open else "CLOSED", delta=now_ny.strftime("%H:%M NY"))
     with c2: st.metric("Bot Status", "Running")
     
-    # ⚠️ ВАЖНО: update_interval=1 и filepath сохраняют состояние
-    # Но на Cloud оно может сброситься при перезагрузке (Reboot)
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('stats', stats_command))
-    
-    # Single MessageHandler
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
     print("Bot started...")
