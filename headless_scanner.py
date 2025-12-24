@@ -8,6 +8,7 @@ import pandas as pd
 import yfinance as yf
 import nest_asyncio
 import streamlit as st
+import time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import (
@@ -19,6 +20,7 @@ from telegram.ext import (
     filters,
     PicklePersistence
 )
+import telegram.error
 
 # --- КОНФИГУРАЦИЯ ---
 nest_asyncio.apply()
@@ -200,9 +202,17 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
     context.bot_data['active_users'].add(user_id)
+    
     allowed = get_allowed_users()
     if user_id not in allowed:
-        await update.message.reply_text("⛔ Доступ запрещен.", parse_mode='HTML')
+        # --- НОВОЕ СООБЩЕНИЕ ДЛЯ НЕЗНАКОМЦЕВ ---
+        msg = (
+            f"⛔ <b>Доступ запрещен.</b>\n\n"
+            f"Ваш Telegram ID: <code>{user_id}</code>\n"
+            f"Чтобы получить доступ, отправьте этот ID администратору:\n"
+            f"👉 <b>@Vova_Skl</b>"
+        )
+        await update.message.reply_html(msg)
         return False
     return True
 
@@ -342,8 +352,8 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             
             # --- AUTO LOGIC ---
             if is_auto:
-                if not is_new: continue # Always New Only
-                if t in sent_today: continue # No duplicates
+                if not is_new: continue 
+                if t in sent_today: continue
             else:
                 if not manual_input and scan_p['new_only'] and not is_new: continue
             
@@ -503,7 +513,6 @@ if __name__ == '__main__':
     # --- WEB DASHBOARD ---
     st.title("💎 Vova Screener Bot")
     
-    # MARKET STATUS
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
     market_open = is_market_open()
@@ -513,8 +522,8 @@ if __name__ == '__main__':
         st.metric("USA Market", "OPEN" if market_open else "CLOSED", delta=now_ny.strftime("%H:%M NY"))
     
     with c2:
-        # NEXT SCAN CALC
         if market_open:
+            # Следующий скан примерно в +1 час
             next_scan = (now_ny + datetime.timedelta(hours=1)).replace(minute=0, second=10)
             time_left = next_scan - now_ny
             st.metric("Next Auto-Scan", next_scan.strftime("%H:%M:%S"), delta=f"In {str(time_left).split('.')[0]}")
@@ -523,7 +532,7 @@ if __name__ == '__main__':
     
     st.info("💡 Refresh this page to see updated times.")
     
-    # BOT START
+    # --- ЗАПУСК С ЗАЩИТОЙ ОТ КОНФЛИКТА ---
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
@@ -533,7 +542,11 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
     
     print("Bot started...")
+    
+    # Защита от Conflict Error
     try:
         application.run_polling(stop_signals=None, close_loop=False)
+    except telegram.error.Conflict:
+        st.error("⚠️ КОНФЛИКТ: Бот уже запущен в другой вкладке! Закройте лишние вкладки и перезагрузите (Reboot) приложение в меню.")
     except Exception as e:
-        st.error(f"Critical Error: {e}")
+        st.error(f"Критическая ошибка: {e}")
