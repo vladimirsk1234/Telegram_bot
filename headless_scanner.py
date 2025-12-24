@@ -10,19 +10,19 @@ import nest_asyncio
 import streamlit as st
 import time
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
+# NOTE: We import ReplyKeyboardMarkup and KeyboardButton now
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, constants
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
-    CallbackQueryHandler,
     MessageHandler,
     filters,
     PicklePersistence
 )
 import telegram.error
 
-# --- КОНФИГУРАЦИЯ ---
+# --- CONFIGURATION ---
 nest_asyncio.apply()
 
 logging.basicConfig(
@@ -31,22 +31,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 1. ЗАГРУЗКА СЕКРЕТОВ
+# 1. LOAD SECRETS
 try:
     TG_TOKEN = st.secrets["TG_TOKEN"]
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
     GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "")
 except Exception as e:
-    st.error(f"❌ Ошибка секретов: {e}")
+    st.error(f"❌ Secret Error: {e}")
     st.stop()
 
-# 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-last_scan_time = "Никогда"
+# 2. GLOBALS
+last_scan_time = "Never"
 
-# Индикаторы
+# Indicators
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
-# ДЕФОЛТНЫЕ ПАРАМЕТРЫ
+# DEFAULT PARAMS
 DEFAULT_PARAMS = {
     'risk_usd': 50.0,
     'min_rr': 1.25,
@@ -57,7 +57,7 @@ DEFAULT_PARAMS = {
     'autoscan': False,
 }
 
-# 3. ЛОГИКА СКРИНЕРА
+# 3. SCREENER LOGIC (Same as before)
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
@@ -180,7 +180,6 @@ def analyze_trade(df, idx):
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(tz)
-    # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     if now.weekday() >= 5: return False
     start = now.replace(hour=9, minute=30, second=0, microsecond=0)
     end = now.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -205,10 +204,9 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     allowed = get_allowed_users()
     if user_id not in allowed:
         msg = (
-            f"⛔ <b>Доступ запрещен / Access Denied</b>\n\n"
-            f"🆔 Ваш ID: <code>{user_id}</code>\n\n"
-            f"📩 Отправьте этот ID администратору для активации:\n"
-            f"👉 <b>@Vova_Skl</b>"
+            f"⛔ <b>Access Denied</b>\n\n"
+            f"ID: <code>{user_id}</code>\n"
+            f"Send ID to: <b>@Vova_Skl</b>"
         )
         try: await update.message.reply_html(msg)
         except: pass
@@ -248,85 +246,67 @@ def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
         f"📊 <b>ATR:</b> {d['ATR']:.2f} ({atr_pct:.1f}%)"
     )
 
-def get_keyboard(p):
-    # ICONS FOR STATE
+# --- NEW: REPLY KEYBOARD FUNCTION ---
+def get_reply_keyboard(p):
+    """Generates the persistent custom keyboard layout."""
+    
+    # Status Indicators in Text
+    risk_txt = f"💸 Risk: ${p['risk_usd']:.0f}"
+    rr_txt = f"⚖️ RR: {p['min_rr']}"
+    atr_txt = f"📊 ATR: {p['max_atr']}%"
+    sma_txt = f"📈 SMA: {p['sma']}"
+    
     tf_txt = "📅 Daily" if p['tf'] == 'Daily' else "🗓 Weekly"
     new_txt = "✨ New: ON" if p['new_only'] else "⚪ New: OFF"
     auto_txt = "🟢 Auto: ON" if p['autoscan'] else "🔴 Auto: OFF"
     
-    # INLINE KEYBOARD LAYOUT
-    kb = [
-        [
-            InlineKeyboardButton(f"💵 Risk: ${p['risk_usd']:.0f}", callback_data="set_risk_usd"),
-            InlineKeyboardButton(f"⚖️ RR: {p['min_rr']}", callback_data="set_rr"),
-        ],
-        [
-            InlineKeyboardButton(f"📉 ATR: <{p['max_atr']}%", callback_data="set_matr"),
-            InlineKeyboardButton(f"〰️ SMA: {p['sma']}", callback_data="set_sma"),
-        ],
-        [
-            InlineKeyboardButton(tf_txt, callback_data="toggle_tf"),
-            InlineKeyboardButton(new_txt, callback_data="toggle_new"),
-        ],
-        [
-            InlineKeyboardButton(auto_txt, callback_data="toggle_auto"),
-        ],
-        [
-            InlineKeyboardButton("▶️ START SCAN", callback_data="start_scan"),
-            InlineKeyboardButton("⏹ STOP/RESET", callback_data="stop_scan"),
-        ]
+    # Layout (Rows of Buttons)
+    keyboard = [
+        [KeyboardButton(risk_txt), KeyboardButton(rr_txt)],
+        [KeyboardButton(atr_txt), KeyboardButton(sma_txt)],
+        [KeyboardButton(tf_txt), KeyboardButton(new_txt), KeyboardButton(auto_txt)],
+        [KeyboardButton("▶️ START SCAN"), KeyboardButton("⏹ STOP SCAN")]
     ]
-    return InlineKeyboardMarkup(kb)
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
-def get_status_text(status="💤 Ожидание", p=None):
-    if not p: return f"Статус: {status}"
+def get_status_text(status="💤 Idle", p=None):
+    if not p: return f"Status: {status}"
     return (
         f"🖥 <b>Vova Screener Bot</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"⚙️ <b>Статус:</b> {status}\n"
-        f"🕒 <b>Посл. скан:</b> {last_scan_time}\n"
+        f"⚙️ <b>Status:</b> {status}\n"
+        f"🕒 <b>Last Scan:</b> {last_scan_time}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>Цель:</b> Risk <b>${p['risk_usd']}</b> (Min RR: {p['min_rr']})\n"
-        f"🔍 <b>Фильтр:</b> {p['tf']} | SMA {p['sma']} | {'Only New' if p['new_only'] else 'All'}"
+        f"🎯 <b>Config:</b> Risk <b>${p['risk_usd']}</b> (Min RR: {p['min_rr']})\n"
+        f"🔍 <b>Filters:</b> {p['tf']} | SMA {p['sma']} | {'Only New' if p['new_only'] else 'All'}"
     )
-
-async def refresh_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, p, status="Готов"):
-    chat_id = update.effective_chat.id
-    last_id = context.user_data.get('last_menu_id')
-    if last_id:
-        try: await context.bot.delete_message(chat_id, last_id)
-        except: pass
-        
-    msg = await context.bot.send_message(
-        chat_id=chat_id,
-        text=get_status_text(status, p),
-        reply_markup=get_keyboard(p),
-        parse_mode='HTML'
-    )
-    context.user_data['last_menu_id'] = msg.message_id
 
 # 5. SCAN PROCESS
 async def run_scan_process(update, context, p, tickers, manual_input=False, is_auto=False):
-    stop_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏹ STOP SCAN", callback_data="stop_scan")]])
+    # Use standard text messages for updates, no inline editing for safety
+    start_txt = "🤖 <b>AutoScan Started...</b>" if is_auto else "🚀 <b>Scanning Started...</b>"
     
-    start_txt = "🤖 <b>Автоскан запущен...</b>" if is_auto else "🚀 <b>Начинаю сканирование...</b>"
+    chat_id = update.effective_chat.id
+    
+    # Send initial status
     status_msg = await context.bot.send_message(
-        chat_id=update.effective_chat.id, 
+        chat_id=chat_id, 
         text=start_txt, 
-        parse_mode=constants.ParseMode.HTML,
-        reply_markup=stop_kb
+        parse_mode=constants.ParseMode.HTML
     )
     
     results_found = 0
     total = len(tickers)
     scan_p = p.copy() 
-    
     user_sent_today = context.user_data.get('sent_today', set())
 
     for i, t in enumerate(tickers):
+        # Stop Check
         if not context.user_data.get('scanning', False) and not manual_input:
-            await status_msg.edit_text("⏹ Сканирование остановлено.")
+            await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
 
+        # Progress Update (Edit message every 10 tickers)
         if i % 10 == 0 or i == total - 1:
             pct = int((i + 1) / total * 10)
             bar = "█" * pct + "░" * (10 - pct)
@@ -334,8 +314,7 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
                 await status_msg.edit_text(
                     f"{'🚀' if not is_auto else '🤖'} <b>Scan:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n"
                     f"<i>SMA{scan_p['sma']} | {scan_p['tf']}</i>", 
-                    parse_mode='HTML',
-                    reply_markup=stop_kb
+                    parse_mode='HTML'
                 )
             except: pass
 
@@ -347,19 +326,20 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
             
             if len(df) < scan_p['sma'] + 5:
-                if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: NO DATA")
+                if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: NO DATA")
                 continue
 
             df = run_vova_logic(df, scan_p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
             valid, d, reason = analyze_trade(df, -1)
             
             if not valid:
-                if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: {reason}")
+                if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: {reason}")
                 continue
 
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
+            # Filters
             if is_auto:
                 if not is_new: continue 
                 if t in user_sent_today: continue
@@ -373,21 +353,18 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             if risk_per_share <= 0: continue
             shares = int(scan_p['risk_usd'] / risk_per_share)
             if shares < 1: 
-                if manual_input: await context.bot.send_message(update.effective_chat.id, f"❌ {t}: Stop too close/Risk too low")
+                if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: Risk too low")
                 continue
             
             pe = get_financial_info(t)
             card = format_luxury_card(t, d, shares, is_new, pe, scan_p['risk_usd'])
             
             await context.bot.send_message(
-                chat_id=update.effective_chat.id,
+                chat_id=chat_id,
                 text=card,
                 parse_mode=constants.ParseMode.HTML,
                 disable_web_page_preview=True
             )
-            
-            if not is_auto and not manual_input:
-                await refresh_menu(update, context, p, status="Идет сканирование...")
             
             if is_auto: 
                 user_sent_today.add(t)
@@ -400,15 +377,19 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     global last_scan_time
     last_scan_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    try: await status_msg.delete()
-    except: pass
-    
-    final_txt = f"✅ <b>{'Авто' if is_auto else 'Ручной'} Скан завершен!</b> Найдено: {results_found}"
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=final_txt, parse_mode='HTML')
+    # Final Report
+    final_txt = f"✅ <b>Scan Complete!</b> Found: {results_found}"
+    await context.bot.send_message(chat_id=chat_id, text=final_txt, parse_mode='HTML')
     context.user_data['scanning'] = False
     
-    if not is_auto and not manual_input:
-        await refresh_menu(update, context, p)
+    # Refresh Reply Keyboard (Send status message with keyboard)
+    if not is_auto:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=get_status_text("Ready", p),
+            reply_markup=get_reply_keyboard(p),
+            parse_mode='HTML'
+        )
 
 # 6. HANDLERS
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -416,103 +397,114 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p = await safe_get_params(context)
     context.user_data['scanning'] = False
     context.user_data['input_mode'] = None
-    await refresh_menu(update, context, p)
+    
+    await update.message.reply_html(
+        "👋 <b>Welcome!</b>\nUse the menu buttons below to control the scanner.",
+        reply_markup=get_reply_keyboard(p)
+    )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     active = context.bot_data.get('active_users', set())
     allowed = get_allowed_users()
-    msg = f"📊 <b>АДМИН</b>\nАктивных: {len(active)}\nWhitelist: {len(allowed)}\nСкан: {last_scan_time}"
+    msg = f"📊 <b>ADMIN STATS</b>\nActive: {len(active)}\nWhitelist: {len(allowed)}\nLast Scan: {last_scan_time}"
     await update.message.reply_html(msg)
 
-async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update, context): return
+    
+    text = update.message.text
     p = await safe_get_params(context)
     
-    if data == "toggle_tf": p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
-    elif data == "toggle_new": p['new_only'] = not p['new_only']
+    # --- BUTTON LOGIC ---
     
-    elif data == "toggle_auto":
-        p['autoscan'] = not p['autoscan']
-        chat_id = update.effective_chat.id
-        user_id = update.effective_user.id 
-        
-        if p['autoscan']:
-            context.job_queue.run_repeating(
-                auto_scan_job, 
-                interval=3600, 
-                first=10, 
-                chat_id=chat_id, 
-                user_id=user_id, 
-                name=str(chat_id)
-            )
-            await context.bot.send_message(chat_id, "🤖 Автоскан ВКЛ (раз в час).")
-        else:
-            for job in context.job_queue.get_jobs_by_name(str(chat_id)): job.schedule_removal()
-            await context.bot.send_message(chat_id, "🤖 Автоскан ВЫКЛ.")
-            
-    elif data == "set_sma":
-        opts = [100, 150, 200]
-        try: p['sma'] = opts[(opts.index(p['sma']) + 1) % 3]
-        except: p['sma'] = 200
-        
-    elif data == "start_scan":
-        if context.user_data.get('scanning'): return
+    if text == "▶️ START SCAN":
+        if context.user_data.get('scanning'): 
+            await update.message.reply_text("⚠️ Scan already running!")
+            return
         context.user_data['scanning'] = True
         tickers = get_sp500_tickers()
         asyncio.create_task(run_scan_process(update, context, p, tickers))
-        return 
+        return
 
-    elif data == "stop_scan":
+    elif text == "⏹ STOP SCAN" or text == "⏹ STOP":
         context.user_data['scanning'] = False
-        await context.bot.send_message(update.effective_chat.id, "🛑 Остановка...")
+        await update.message.reply_text("🛑 Stopping...")
         return
 
-    elif data in ["set_risk_usd", "set_rr", "set_matr"]:
-        context.user_data['input_mode'] = data
-        try: await query.message.delete()
-        except: pass
-        lbl = "Риск в $ (например 50)" if data == "set_risk_usd" else "Значение"
-        await context.bot.send_message(update.effective_chat.id, f"✏️ Введите {lbl}:", parse_mode='HTML')
-        return
-
-    context.user_data['params'] = p
-    await refresh_menu(update, context, p)
-
-async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update, context): return
-    p = await safe_get_params(context)
-    txt = update.message.text.strip()
-    mode = context.user_data.get('input_mode')
+    # Toggles
+    elif "Daily" in text or "Weekly" in text:
+        p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
     
-    if not mode:
-        if "," in txt or (txt.isalpha() and len(txt)<6):
-            ts = [x.strip().upper() for x in txt.split(",") if x.strip()]
-            if ts:
-                await update.message.reply_text(f"🔎 Manual: {ts}")
-                await run_scan_process(update, context, p, ts, manual_input=True)
+    elif "New: ON" in text or "New: OFF" in text:
+        p['new_only'] = not p['new_only']
+        
+    elif "Auto: ON" in text or "Auto: OFF" in text:
+        p['autoscan'] = not p['autoscan']
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        if p['autoscan']:
+            context.job_queue.run_repeating(auto_scan_job, interval=3600, first=10, chat_id=chat_id, user_id=user_id, name=str(chat_id))
+            await update.message.reply_text("🤖 AutoScan ENABLED (Hourly)")
+        else:
+            for job in context.job_queue.get_jobs_by_name(str(chat_id)): job.schedule_removal()
+            await update.message.reply_text("🤖 AutoScan DISABLED")
+
+    elif "SMA:" in text:
+        opts = [100, 150, 200]
+        try: p['sma'] = opts[(opts.index(p['sma']) + 1) % 3]
+        except: p['sma'] = 200
+
+    # Input Triggers
+    elif "Risk:" in text:
+        context.user_data['input_mode'] = "risk_usd"
+        await update.message.reply_text("✏️ Enter Risk Amount in $ (e.g., 50):")
+        return
+    elif "RR:" in text:
+        context.user_data['input_mode'] = "min_rr"
+        await update.message.reply_text("✏️ Enter Min RR (e.g., 2.0):")
+        return
+    elif "ATR:" in text:
+        context.user_data['input_mode'] = "max_atr"
+        await update.message.reply_text("✏️ Enter Max ATR % (e.g., 5.0):")
+        return
+
+    # --- NUMBER INPUT LOGIC ---
+    elif context.user_data.get('input_mode'):
+        try:
+            val = float(text.replace(',', '.'))
+            mode = context.user_data['input_mode']
+            if mode == "risk_usd": p['risk_usd'] = max(1.0, val)
+            elif mode == "min_rr": p['min_rr'] = max(1.0, val)
+            elif mode == "max_atr": p['max_atr'] = val
+            context.user_data['input_mode'] = None
+            await update.message.reply_text("✅ Updated!")
+        except:
+            await update.message.reply_text("❌ Invalid number. Try again.")
             return
-    
-    try:
-        val = float(txt.replace(',', '.'))
-        if mode == "set_risk_usd": p['risk_usd'] = max(1.0, val)
-        elif mode == "set_rr": p['min_rr'] = max(1.25, val)
-        elif mode == "set_matr": p['max_atr'] = val
-        context.user_data['input_mode'] = None
-        context.user_data['params'] = p
-        await refresh_menu(update, context, p, status="Параметр обновлен")
-    except: await update.message.reply_text("❌ Введите число.")
+
+    # --- MANUAL TICKER INPUT ---
+    elif "," in text or (text.isalpha() and len(text) < 6):
+        ts = [x.strip().upper() for x in text.split(",") if x.strip()]
+        if ts:
+            await update.message.reply_text(f"🔎 Scanning: {ts}")
+            await run_scan_process(update, context, p, ts, manual_input=True)
+        return
+
+    # SAVE & REFRESH KEYBOARD
+    context.user_data['params'] = p
+    await update.message.reply_text(
+        get_status_text("Ready", p),
+        reply_markup=get_reply_keyboard(p),
+        parse_mode='HTML'
+    )
 
 async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     user_id = job.user_id
     if not user_id: return
+    if user_id not in context.application.user_data: return
     
-    if user_id not in context.application.user_data:
-        context.application.user_data[user_id] = {}
-        
     user_data = context.application.user_data[user_id]
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
@@ -525,51 +517,36 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     class Dummy: pass
     u = Dummy(); u.effective_chat = Dummy(); u.effective_chat.id = job.chat_id
     
-    if 'params' not in user_data: user_data['params'] = DEFAULT_PARAMS.copy()
-    p = user_data['params'].copy()
+    p = user_data.get('params', DEFAULT_PARAMS).copy()
     user_data['scanning'] = True
-    
     await run_scan_process(u, context, p, get_sp500_tickers(), is_auto=True)
 
 # 7. MAIN
 if __name__ == '__main__':
     st.set_page_config(page_title="Vova Bot", page_icon="🤖")
-    st.title("💎 Vova Screener Bot")
+    st.title("💎 Vova Screener Bot (Reply Keyboard)")
     
+    # Web Dashboard Info
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
     market_open = is_market_open()
-    
     c1, c2 = st.columns(2)
-    with c1:
-        st.metric("USA Market", "OPEN" if market_open else "CLOSED", delta=now_ny.strftime("%H:%M NY"))
+    with c1: st.metric("USA Market", "OPEN" if market_open else "CLOSED", delta=now_ny.strftime("%H:%M NY"))
+    with c2: st.metric("Bot Status", "Running")
     
-    with c2:
-        if market_open:
-            next_scan = (now_ny + datetime.timedelta(hours=1)).replace(minute=0, second=10)
-            time_left = next_scan - now_ny
-            st.metric("Next Auto-Scan", next_scan.strftime("%H:%M:%S"), delta=f"In {str(time_left).split('.')[0]}")
-        else:
-            st.metric("Next Auto-Scan", "PAUSED", delta="Market Closed", delta_color="off")
-    
-    st.info("💡 Refresh page to update timers.")
-    
-    # --- ЗАПУСК ---
-    # update_interval=1 сохраняет КАЖДОЕ действие каждого пользователя
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('stats', stats_command))
-    application.add_handler(CallbackQueryHandler(button_click))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
+    
+    # Single MessageHandler for all text (buttons + input)
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
     print("Bot started...")
-    
-    # ЗАЩИТА ОТ КОНФЛИКТА
     try:
         application.run_polling(stop_signals=None, close_loop=False)
     except telegram.error.Conflict:
-        st.error("⚠️ КОНФЛИКТ: Перезагрузите (Reboot) приложение.")
+        st.error("⚠️ Conflict Error: Please REBOOT app.")
     except Exception as e:
-        st.error(f"Критическая ошибка: {e}")
+        st.error(f"Critical Error: {e}")
