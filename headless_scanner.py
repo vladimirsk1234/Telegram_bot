@@ -64,8 +64,6 @@ def get_sp500_tickers():
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {"User-Agent": "Mozilla/5.0"}
         html = pd.read_html(requests.get(url, headers=headers).text, header=0)
-        # Yahoo использует дефис (BRK-B), TradingView точку (BRK.B).
-        # Здесь возвращаем формат для Yahoo (с дефисом).
         return [t.replace('.', '-') for t in html[0]['Symbol'].tolist()]
     except: return []
 
@@ -206,15 +204,13 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     allowed = get_allowed_users()
     if user_id not in allowed:
-        # --- НОВОЕ СООБЩЕНИЕ ДЛЯ НЕЗНАКОМЦЕВ ---
         msg = (
             f"⛔ <b>Доступ запрещен / Access Denied</b>\n\n"
             f"🆔 Ваш ID: <code>{user_id}</code>\n\n"
             f"📩 Отправьте этот ID администратору для активации:\n"
             f"👉 <b>@Vova_Skl</b>"
         )
-        try:
-            await update.message.reply_html(msg)
+        try: await update.message.reply_html(msg)
         except: pass
         return False
     return True
@@ -233,10 +229,8 @@ async def safe_get_params(context):
     return context.user_data['params']
 
 def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
-    # ВАЖНО: TradingView использует точки вместо дефисов для тикеров (BRK.B вместо BRK-B)
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
-    
     badge = "🆕" if is_new else ""
     pe_str = f"| P/E: <b>{pe_val:.0f}</b>" if pe_val else ""
     val_pos = shares * d['P']
@@ -255,27 +249,31 @@ def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     )
 
 def get_keyboard(p):
-    tf_txt = "📅 D1" if p['tf'] == 'Daily' else "📅 W1"
-    new_txt = "🆕 On" if p['new_only'] else "🆕 Off"
-    auto_txt = "🤖 On" if p['autoscan'] else "🤖 Off"
+    # ICONS FOR STATE
+    tf_txt = "📅 Daily" if p['tf'] == 'Daily' else "🗓 Weekly"
+    new_txt = "✨ New: ON" if p['new_only'] else "⚪ New: OFF"
+    auto_txt = "🟢 Auto: ON" if p['autoscan'] else "🔴 Auto: OFF"
     
+    # INLINE KEYBOARD LAYOUT
     kb = [
         [
-            InlineKeyboardButton(f"💸 Risk: ${p['risk_usd']:.0f}", callback_data="set_risk_usd"),
+            InlineKeyboardButton(f"💵 Risk: ${p['risk_usd']:.0f}", callback_data="set_risk_usd"),
             InlineKeyboardButton(f"⚖️ RR: {p['min_rr']}", callback_data="set_rr"),
         ],
         [
-            InlineKeyboardButton(f"📊 Max ATR: {p['max_atr']}%", callback_data="set_matr"),
-            InlineKeyboardButton(f"📈 SMA {p['sma']}", callback_data="set_sma"),
+            InlineKeyboardButton(f"📉 ATR: <{p['max_atr']}%", callback_data="set_matr"),
+            InlineKeyboardButton(f"〰️ SMA: {p['sma']}", callback_data="set_sma"),
         ],
         [
             InlineKeyboardButton(tf_txt, callback_data="toggle_tf"),
             InlineKeyboardButton(new_txt, callback_data="toggle_new"),
-            InlineKeyboardButton(f"Auto: {auto_txt}", callback_data="toggle_auto"),
+        ],
+        [
+            InlineKeyboardButton(auto_txt, callback_data="toggle_auto"),
         ],
         [
             InlineKeyboardButton("▶️ START SCAN", callback_data="start_scan"),
-            InlineKeyboardButton("⏹ STOP", callback_data="stop_scan"),
+            InlineKeyboardButton("⏹ STOP/RESET", callback_data="stop_scan"),
         ]
     ]
     return InlineKeyboardMarkup(kb)
@@ -287,8 +285,8 @@ def get_status_text(status="💤 Ожидание", p=None):
         f"⚙️ <b>Статус:</b> {status}\n"
         f"🕒 <b>Посл. скан:</b> {last_scan_time}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"Risk: <b>${p['risk_usd']}</b> | RR: {p['min_rr']} | ATR: {p['max_atr']}%\n"
-        f"Mode: {p['tf']} | SMA: {p['sma']} | New: {p['new_only']}"
+        f"🎯 <b>Цель:</b> Risk <b>${p['risk_usd']}</b> (Min RR: {p['min_rr']})\n"
+        f"🔍 <b>Фильтр:</b> {p['tf']} | SMA {p['sma']} | {'Only New' if p['new_only'] else 'All'}"
     )
 
 async def refresh_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, p, status="Готов"):
@@ -368,7 +366,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             else:
                 if not manual_input and scan_p['new_only'] and not is_new: continue
             
-            # Filters
             if d['RR'] < scan_p['min_rr']: continue
             if (d['ATR']/d['P'])*100 > scan_p['max_atr']: continue
             
@@ -557,6 +554,8 @@ if __name__ == '__main__':
     
     st.info("💡 Refresh page to update timers.")
     
+    # --- ЗАПУСК ---
+    # update_interval=1 сохраняет КАЖДОЕ действие каждого пользователя
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
@@ -571,7 +570,6 @@ if __name__ == '__main__':
     try:
         application.run_polling(stop_signals=None, close_loop=False)
     except telegram.error.Conflict:
-        # Просто пишем в лог, не падаем
-        st.error("⚠️ Bot is already running in another instance. Please REBOOT APP in menu.")
+        st.error("⚠️ КОНФЛИКТ: Перезагрузите (Reboot) приложение.")
     except Exception as e:
-        st.error(f"Critical Error: {e}")
+        st.error(f"Критическая ошибка: {e}")
