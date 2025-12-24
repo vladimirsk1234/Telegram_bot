@@ -40,16 +40,16 @@ except Exception as e:
     st.error(f"❌ Ошибка секретов: {e}")
     st.stop()
 
-# 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ (ТОЛЬКО ОБЩИЕ, НЕ ПОЛЬЗОВАТЕЛЬСКИЕ)
-last_scan_time = "Никогда" # Это время последнего запуска скрипта сервером
+# 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
+last_scan_time = "Никогда"
 
 # Индикаторы
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
-# ДЕФОЛТНЫЕ ПАРАМЕТРЫ (Шаблон)
+# ДЕФОЛТНЫЕ ПАРАМЕТРЫ
 DEFAULT_PARAMS = {
-    'risk_usd': 100.0,
-    'min_rr': 1.5,
+    'risk_usd': 50.0,
+    'min_rr': 1.25,
     'max_atr': 5.0,
     'sma': 200,
     'tf': 'Daily',
@@ -64,6 +64,8 @@ def get_sp500_tickers():
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {"User-Agent": "Mozilla/5.0"}
         html = pd.read_html(requests.get(url, headers=headers).text, header=0)
+        # Yahoo использует дефис (BRK-B), TradingView точку (BRK.B).
+        # Здесь возвращаем формат для Yahoo (с дефисом).
         return [t.replace('.', '-') for t in html[0]['Symbol'].tolist()]
     except: return []
 
@@ -180,7 +182,6 @@ def analyze_trade(df, idx):
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(tz)
-    # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     if now.weekday() >= 5: return False
     start = now.replace(hour=9, minute=30, second=0, microsecond=0)
     end = now.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -199,7 +200,6 @@ def get_allowed_users():
 
 async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Сохраняем пользователя в список активных для статистики
     if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
     context.bot_data['active_users'].add(user_id)
     
@@ -216,26 +216,23 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return True
 
 async def safe_get_params(context):
-    """
-    Загружает ПЕРСОНАЛЬНЫЕ параметры пользователя.
-    Инициализирует sent_today для пользователя, если нет.
-    """
     if 'params' not in context.user_data:
         context.user_data['params'] = DEFAULT_PARAMS.copy()
     else:
-        # Мержим с дефолтными на случай обновления бота новыми фичами
         for k, v in DEFAULT_PARAMS.items():
             if k not in context.user_data['params']:
                 context.user_data['params'][k] = v
-    
-    # Инициализация персонального списка просмотренных тикеров
+                
     if 'sent_today' not in context.user_data:
         context.user_data['sent_today'] = set()
         
     return context.user_data['params']
 
 def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
-    tv_link = f"https://www.tradingview.com/chart/?symbol={ticker.replace('-', '.')}"
+    # ВАЖНО: TradingView использует точки вместо дефисов для тикеров (BRK.B вместо BRK-B)
+    tv_ticker = ticker.replace('-', '.')
+    tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
+    
     badge = "🆕" if is_new else ""
     pe_str = f"| P/E: <b>{pe_val:.0f}</b>" if pe_val else ""
     val_pos = shares * d['P']
@@ -321,7 +318,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     total = len(tickers)
     scan_p = p.copy() 
     
-    # Загружаем ЛИЧНЫЙ список отправленных сегодня
     user_sent_today = context.user_data.get('sent_today', set())
 
     for i, t in enumerate(tickers):
@@ -362,10 +358,9 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
-            # --- AUTO LOGIC (INDIVIDUAL) ---
             if is_auto:
                 if not is_new: continue 
-                if t in user_sent_today: continue # Проверка по ЛИЧНОМУ списку
+                if t in user_sent_today: continue
             else:
                 if not manual_input and scan_p['new_only'] and not is_new: continue
             
@@ -393,7 +388,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             if not is_auto and not manual_input:
                 await refresh_menu(update, context, p, status="Идет сканирование...")
             
-            # Сохраняем в ЛИЧНЫЙ список
             if is_auto: 
                 user_sent_today.add(t)
                 context.user_data['sent_today'] = user_sent_today
@@ -442,16 +436,15 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "toggle_auto":
         p['autoscan'] = not p['autoscan']
         chat_id = update.effective_chat.id
-        user_id = update.effective_user.id # ВАЖНО: используем ID пользователя
+        user_id = update.effective_user.id 
         
         if p['autoscan']:
-            # ЗАПУСКАЕМ ЗАДАЧУ ДЛЯ КОНКРЕТНОГО ПОЛЬЗОВАТЕЛЯ
             context.job_queue.run_repeating(
                 auto_scan_job, 
                 interval=3600, 
                 first=10, 
                 chat_id=chat_id, 
-                user_id=user_id, # Передаем ID юзера
+                user_id=user_id, 
                 name=str(chat_id)
             )
             await context.bot.send_message(chat_id, "🤖 Автоскан ВКЛ (раз в час).")
@@ -513,44 +506,33 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
-    # Ищем данные пользователя, запустившего задачу
     user_id = job.user_id
-    
     if not user_id: return
     
-    # Инициализация для пользователя
     if user_id not in context.application.user_data:
         context.application.user_data[user_id] = {}
         
     user_data = context.application.user_data[user_id]
-
-    # Сброс дневного лимита (Индивидуально)
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
-    if 'sent_today' not in user_data: user_data['sent_today'] = set()
     
-    if now_ny.hour == 9 and now_ny.minute < 5: 
-        user_data['sent_today'].clear()
+    if 'sent_today' not in user_data: user_data['sent_today'] = set()
+    if now_ny.hour == 9 and now_ny.minute < 5: user_data['sent_today'].clear()
     
     if not is_market_open(): return 
     
     class Dummy: pass
     u = Dummy(); u.effective_chat = Dummy(); u.effective_chat.id = job.chat_id
     
-    if 'params' not in user_data:
-         user_data['params'] = DEFAULT_PARAMS.copy()
-    
+    if 'params' not in user_data: user_data['params'] = DEFAULT_PARAMS.copy()
     p = user_data['params'].copy()
     user_data['scanning'] = True
     
-    # Запускаем процесс для конкретного пользователя
     await run_scan_process(u, context, p, get_sp500_tickers(), is_auto=True)
 
 # 7. MAIN
 if __name__ == '__main__':
     st.set_page_config(page_title="Vova Bot", page_icon="🤖")
-    
-    # --- WEB DASHBOARD ---
     st.title("💎 Vova Screener Bot")
     
     ny_tz = pytz.timezone('US/Eastern')
@@ -569,10 +551,8 @@ if __name__ == '__main__':
         else:
             st.metric("Next Auto-Scan", "PAUSED", delta="Market Closed", delta_color="off")
     
-    st.info("💡 Refresh to see updated times.")
+    st.info("💡 Refresh page to update timers.")
     
-    # --- ЗАПУСК ---
-    # update_interval=1 сохраняет КАЖДОЕ действие каждого пользователя
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
@@ -585,6 +565,6 @@ if __name__ == '__main__':
     try:
         application.run_polling(stop_signals=None, close_loop=False)
     except telegram.error.Conflict:
-        st.error("⚠️ КОНФЛИКТ: Перезагрузите (Reboot) приложение.")
+        st.error("⚠️ КОНФЛИКТ: Закройте другие вкладки и перезагрузите (Reboot).")
     except Exception as e:
         st.error(f"Критическая ошибка: {e}")
