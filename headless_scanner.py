@@ -183,8 +183,7 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     t_st = np.zeros(n, dtype=int)
     t_st[bull] = 1; t_st[bear] = -1
     
-    df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak
-    df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
+    df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak; df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
     return df
 
 def analyze_trade(df, idx):
@@ -258,29 +257,28 @@ async def safe_get_params(context):
         context.user_data['params'] = new_params
     return context.user_data['params']
 
+# --- NEW 2-COLUMN LUXURY DESIGN ---
 def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     status = "⚡ NEW SIGNAL" if is_new else "♻️ ACTIVE"
     pe_str = f"{pe_val:.1f}" if pe_val else "N/A"
+    
     val_pos = shares * d['P']
     profit = (d['TP'] - d['P']) * shares
     loss = (d['P'] - d['SL']) * shares
     atr_pct = (d['ATR'] / d['P']) * 100
     
+    # 2-Column Simulation using Separators |
     html = (
-        f"<b><a href='{tv_link}'>{ticker}</a></b>  |  {status}\n"
-        f"<code>${d['P']:.2f}</code>  (P/E: <code>{pe_str}</code>)\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"<b>📊 POSITION</b>\n"
-        f"• Shares: <code>{shares}</code>\n"
-        f"• Value:  <code>${val_pos:.0f}</code>\n"
-        f"• R:R:    <code>{d['RR']:.2f}</code>\n\n"
-        f"<b>🎯 LEVELS</b>\n"
-        f"🟢 Target:     <code>{d['TP']:.2f}</code> (<code>+${profit:.0f}</code>)\n"
-        f"🔴 Stop Loss:  <code>{d['SL']:.2f}</code> (<code>-${abs(loss):.0f}</code>)\n"
-        f"🔸 Crit Level: <code>{d['Crit']:.2f}</code>\n"
-        f"🔹 ATR Vol:    <code>{d['ATR']:.2f}</code> (<code>{atr_pct:.1f}%</code>)"
+        f"<b><a href='{tv_link}'>{ticker}</a></b> | {status}\n"
+        f"<code>${d['P']:.2f}</code> (P/E: <code>{pe_str}</code>)\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"<b>📊 POS</b>: <code>{shares}</code> | <b>💰 Val</b>: <code>${val_pos:.0f}</code>\n"
+        f"<b>⚖️ R:R</b>: <code>{d['RR']:.2f}</code>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"<b>🎯 TP</b>: <code>{d['TP']:.2f}</code> | <b>🛑 SL</b>: <code>{d['SL']:.2f}</code>\n"
+        f"<b>🔸 Crit</b>: <code>{d['Crit']:.2f}</code> | <b>🔹 ATR</b>: <code>{d['ATR']:.2f}</code>"
     )
     return html
 
@@ -290,12 +288,8 @@ def get_reply_keyboard(p):
     atr_txt = f"📊 ATR: {p['max_atr']}%"
     sma_txt = f"📈 SMA: {p['sma']}"
     tf_txt = "📅 Daily" if p['tf'] == 'Daily' else "🗓 Weekly"
-    
-    # NEW ONLY SWITCH
     new_status = "✅" if p['new_only'] else "❌"
     new_txt = f"Only New signals {new_status}"
-    
-    # REMOVED AUTO SCAN BUTTON
     
     keyboard = [
         [KeyboardButton(risk_txt), KeyboardButton(rr_txt)],
@@ -341,7 +335,6 @@ async def run_scan_process(update, context, p, tickers):
     total = len(tickers)
     scan_p = p.copy() 
 
-    # Garbage Collect before start
     gc.collect()
 
     for i, t in enumerate(tickers):
@@ -379,7 +372,6 @@ async def run_scan_process(update, context, p, tickers):
             )
             
             if len(df) < scan_p['sma'] + 5:
-                # if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: NO DATA")
                 continue
 
             # --- LOGIC ---
@@ -389,7 +381,6 @@ async def run_scan_process(update, context, p, tickers):
             valid, d, reason = analyze_trade(df, -1)
             
             if not valid:
-                # if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: {reason}")
                 continue
 
             # 2. Check if New
@@ -410,7 +401,6 @@ async def run_scan_process(update, context, p, tickers):
             if risk_per_share <= 0: continue
             shares = int(scan_p['risk_usd'] / risk_per_share)
             if shares < 1: 
-                # if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: Risk too low")
                 continue
             
             # --- FOUND ---
@@ -428,7 +418,7 @@ async def run_scan_process(update, context, p, tickers):
     
     final_txt = (
         f"🏁 <b>SCAN COMPLETE</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━\n"
         f"✅ <b>Found:</b> {results_found} signals\n"
         f"📊 <b>Total Scanned:</b> {total}\n"
     )
