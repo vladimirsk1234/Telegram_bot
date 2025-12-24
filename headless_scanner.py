@@ -664,4 +664,5 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
     
     print("Bot is running...")
-    application.run_polling()
+    application.run_polling(stop_signals=None)
+
