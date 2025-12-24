@@ -257,11 +257,11 @@ async def safe_get_params(context):
         context.user_data['params'] = new_params
     return context.user_data['params']
 
-# --- NEW 2-COLUMN LUXURY DESIGN ---
+# --- UPDATED CARD DESIGN (LIST STYLE) ---
 def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
-    status = "⚡ NEW SIGNAL" if is_new else "♻️ ACTIVE"
+    status = "🆕 NEW" if is_new else "♻️ ACTIVE"
     pe_str = f"{pe_val:.1f}" if pe_val else "N/A"
     
     val_pos = shares * d['P']
@@ -269,16 +269,19 @@ def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     loss = (d['P'] - d['SL']) * shares
     atr_pct = (d['ATR'] / d['P']) * 100
     
-    # 2-Column Simulation using Separators |
     html = (
-        f"<b><a href='{tv_link}'>{ticker}</a></b> | {status}\n"
-        f"<code>${d['P']:.2f}</code> (P/E: <code>{pe_str}</code>)\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"<b>📊 POS</b>: <code>{shares}</code> | <b>💰 Val</b>: <code>${val_pos:.0f}</code>\n"
-        f"<b>⚖️ R:R</b>: <code>{d['RR']:.2f}</code>\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"<b>🎯 TP</b>: <code>{d['TP']:.2f}</code> | <b>🛑 SL</b>: <code>{d['SL']:.2f}</code>\n"
-        f"<b>🔸 Crit</b>: <code>{d['Crit']:.2f}</code> | <b>🔹 ATR</b>: <code>{d['ATR']:.2f}</code>"
+        f"💎 <b><a href='{tv_link}'>{ticker}</a></b> | {status}\n"
+        f"💵 <b>${d['P']:.2f}</b> (P/E: {pe_str})\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>POSITION</b>\n"
+        f"• Shares: <code>{shares}</code>\n"
+        f"• Value:  <code>${val_pos:.0f}</code>\n"
+        f"• R:R:    <code>{d['RR']:.2f}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>TP</b>:  <code>{d['TP']:.2f}</code> (<code>+${profit:.0f}</code>)\n"
+        f"🛑 <b>SL</b>:  <code>{d['SL']:.2f}</code> (<code>-${abs(loss):.0f}</code>)\n"
+        f"📉 <b>Critical Level</b>: <code>{d['Crit']:.2f}</code>\n"
+        f"⚡ <b>ATR Vol</b>: <code>{d['ATR']:.2f}</code> (<code>{atr_pct:.1f}%</code>)"
     )
     return html
 
