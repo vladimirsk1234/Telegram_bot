@@ -50,7 +50,7 @@ except Exception as e:
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 last_scan_time = "Never"
 
-# Константы индикаторов (Как в Web)
+# Индикаторы (Настройки Pine Script - КАК В ВЕБЕ)
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
 # ДЕФОЛТНЫЕ ПАРАМЕТРЫ
@@ -114,77 +114,123 @@ def calc_atr(df, length):
     tr = pd.concat([h-l, (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1/length, adjust=False).mean()
 
-# --- STRATEGY CORE ---
+# --- STRATEGY CORE (EXACT COPY) ---
 def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
+    # --- Indicators ---
     df['SMA'] = calc_sma(df['Close'], len_maj)
     adx, p_di, m_di = calc_adx_pine(df, adx_len)
-    ema_f = calc_ema(df['Close'], len_fast); ema_s = calc_ema(df['Close'], len_slow)
-    hist = calc_macd(df['Close']); efi = calc_ema(df['Close'].diff() * df['Volume'], len_fast)
+    
+    ema_f = calc_ema(df['Close'], len_fast)
+    ema_s = calc_ema(df['Close'], len_slow)
+    hist = calc_macd(df['Close'])
+    efi = calc_ema(df['Close'].diff() * df['Volume'], len_fast)
     atr = calc_atr(df, atr_len)
     
+    # --- Iterative Structure Logic ---
     n = len(df)
     c_a, h_a, l_a = df['Close'].values, df['High'].values, df['Low'].values
-    seq_st = np.zeros(n, dtype=int); crit_lvl = np.full(n, np.nan)
-    res_peak = np.full(n, np.nan); res_struct = np.zeros(n, dtype=bool)
     
-    s_state = 0; s_crit = np.nan; s_h = h_a[0]; s_l = l_a[0]
-    last_pk = np.nan; last_tr = np.nan; pk_hh = False; tr_hl = False
+    seq_st = np.zeros(n, dtype=int)
+    crit_lvl = np.full(n, np.nan)
+    res_peak = np.full(n, np.nan)
+    res_struct = np.zeros(n, dtype=bool)
+    
+    # State Variables
+    s_state = 0
+    s_crit = np.nan
+    s_h = h_a[0]; s_l = l_a[0]
+    
+    last_pk = np.nan; last_tr = np.nan
+    pk_hh = False; tr_hl = False
     
     for i in range(1, n):
         c, h, l = c_a[i], h_a[i], l_a[i]
-        prev_st = s_state; prev_cr = s_crit; prev_sh = s_h; prev_sl = s_l
+        
+        prev_st = s_state
+        prev_cr = s_crit
+        prev_sh = s_h
+        prev_sl = s_l
+        
         brk = False
         if prev_st == 1 and not np.isnan(prev_cr): brk = c < prev_cr
         elif prev_st == -1 and not np.isnan(prev_cr): brk = c > prev_cr
+            
         if brk:
-            if prev_st == 1:
+            if prev_st == 1: # Bearish Break
                 is_hh = True if np.isnan(last_pk) else (prev_sh > last_pk)
-                pk_hh = is_hh; last_pk = prev_sh; s_state = -1; s_h = h; s_l = l; s_crit = h
-            else:
+                pk_hh = is_hh
+                last_pk = prev_sh
+                s_state = -1
+                s_h = h; s_l = l
+                s_crit = h
+            else: # Bullish Break
                 is_hl = True if np.isnan(last_tr) else (prev_sl > last_tr)
-                tr_hl = is_hl; last_tr = prev_sl; s_state = 1; s_h = h; s_l = l; s_crit = l
+                tr_hl = is_hl
+                last_tr = prev_sl
+                s_state = 1
+                s_h = h; s_l = l
+                s_crit = l
         else:
             s_state = prev_st
-            if s_state == 1:
+            if s_state == 1: # Uptrend
                 if h >= s_h: s_h = h
                 if h >= prev_sh: s_crit = l
                 else: s_crit = prev_cr
-            elif s_state == -1:
+            elif s_state == -1: # Downtrend
                 if l <= s_l: s_l = l
                 if l <= prev_sl: s_crit = h
                 else: s_crit = prev_cr
-            else:
-                if c > prev_sh: s_state = 1; s_crit = l
-                elif c < prev_sl: s_state = -1; s_crit = h
-                else: s_h = max(prev_sh, h); s_l = min(prev_sl, l)
-        seq_st[i] = s_state; crit_lvl[i] = s_crit; res_peak[i] = last_pk; res_struct[i] = (pk_hh and tr_hl)
+            else: # Init
+                if c > prev_sh: 
+                    s_state = 1; s_crit = l
+                elif c < prev_sl: 
+                    s_state = -1; s_crit = h
+                else:
+                    s_h = max(prev_sh, h); s_l = min(prev_sl, l)
+        
+        seq_st[i] = s_state
+        crit_lvl[i] = s_crit
+        res_peak[i] = last_pk
+        res_struct[i] = (pk_hh and tr_hl)
 
+    # --- Super Trend Logic ---
     adx_str = adx >= adx_thr
     bull = (adx_str & (p_di > m_di)) & ((ema_f > ema_f.shift(1)) & (ema_s > ema_s.shift(1)) & (hist > hist.shift(1))) & (efi > 0)
     bear = (adx_str & (m_di > p_di)) & ((ema_f < ema_f.shift(1)) & (ema_s < ema_s.shift(1)) & (hist < hist.shift(1))) & (efi < 0)
-    t_st = np.zeros(n, dtype=int); t_st[bull] = 1; t_st[bear] = -1
-    df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak; df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
+    
+    t_st = np.zeros(n, dtype=int)
+    t_st[bull] = 1
+    t_st[bear] = -1
+    
+    df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak
+    df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
     return df
 
 def analyze_trade(df, idx):
     r = df.iloc[idx]
     errs = []
+    
     if r['Seq'] != 1: errs.append("SEQ!=1")
     if np.isnan(r['SMA']) or r['Close'] <= r['SMA']: errs.append("SMA")
     if r['Trend'] == -1: errs.append("TREND")
     if not r['Struct']: errs.append("STRUCT")
     if np.isnan(r['Peak']) or np.isnan(r['Crit']): errs.append("NO DATA")
+    
     if errs: return False, {}, " ".join(errs)
     
     price = r['Close']; tp = r['Peak']; crit = r['Crit']; atr = r['ATR']
-    final_sl = min(crit, price - atr)
+    sl_struct = crit
+    sl_atr = price - atr
+    final_sl = min(sl_struct, sl_atr)
+    
     risk = price - final_sl; reward = tp - price
     if risk <= 0: return False, {}, "BAD STOP"
     if reward <= 0: return False, {}, "AT TARGET"
     
+    rr = reward / risk
     return True, {
         "P": price, "TP": tp, "SL": final_sl, 
-        "RR": reward/risk, "ATR": atr, "Crit": crit,
+        "RR": rr, "ATR": atr, "Crit": crit,
         "SL_Type": "STR" if abs(final_sl - crit) < 0.01 else "ATR"
     }, "OK"
 
@@ -195,7 +241,6 @@ def analyze_trade(df, idx):
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(tz)
-    # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     if now.weekday() >= 5: return False
     start = now.replace(hour=9, minute=30, second=0, microsecond=0)
     end = now.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -216,7 +261,6 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
     context.bot_data['active_users'].add(user_id)
-    
     allowed = get_allowed_users()
     if user_id not in allowed:
         msg = f"⛔ <b>Access Denied</b>\n\nID: <code>{user_id}</code>\nSend ID to: <b>@Vova_Skl</b>"
@@ -242,7 +286,7 @@ async def safe_get_params(context):
 def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
-    badge = "🆕" if is_new else ""
+    status = "⚡ NEW SIGNAL" if is_new else "♻️ ACTIVE"
     pe_str = f"{pe_val:.1f}" if pe_val else "N/A"
     val_pos = shares * d['P']
     profit = (d['TP'] - d['P']) * shares
@@ -310,7 +354,7 @@ def get_help_message():
     )
 
 # ==========================================
-# 5. SCAN PROCESS (CORRECTED LOGIC)
+# 5. SCAN PROCESS
 # ==========================================
 async def run_scan_process(update, context, p, tickers, manual_input=False, is_auto=False):
     mode_mark = "🤖 AUTO" if is_auto else "🚀 MANUAL"
@@ -328,12 +372,10 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     gc.collect()
 
     for i, t in enumerate(tickers):
-        # Stop Check
         if not context.user_data.get('scanning', False) and not manual_input:
             await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
 
-        # Progress Bar & Anti-Flood
         if i % 10 == 0 or i == total - 1:
             pct = int((i + 1) / total * 10)
             bar = "█" * pct + "░" * (10 - pct)
@@ -345,16 +387,15 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
                 )
             except: pass
             
-        # Memory Cleanup
         if i % 50 == 0: gc.collect()
 
         try:
-            await asyncio.sleep(0.01) # Yield to event loop
+            await asyncio.sleep(0.01) 
             
             inter = "1d" if scan_p['tf'] == "Daily" else "1wk"
             fetch_period = "2y" if scan_p['tf'] == "Daily" else "5y"
             
-            # --- DATA FETCHING (MATCHING WEB EXACTLY) ---
+            # --- DATA FETCHING (EXACTLY LIKE WEB) ---
             df = yf.download(
                 t, 
                 period=fetch_period, 
@@ -371,34 +412,33 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             # --- LOGIC ---
             df = run_vova_logic(df, scan_p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
             
-            # 1. Check if CURRENT candle is valid
+            # 1. Analyze Current Candle
             valid, d, reason = analyze_trade(df, -1)
             
             if not valid:
                 if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: {reason}")
                 continue
 
-            # 2. Check if PREVIOUS candle was valid (to determine if "New")
+            # 2. Check if New
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
-            # --- FILTERING LOGIC ---
+            # --- FILTERING LOGIC (MATCHING WEB) ---
             if is_auto:
-                # AUTO: STRICT MODE
-                if not is_new: continue         # Must be new today
-                if t in user_sent_today: continue # Must not be sent today
+                if not is_new: continue 
+                if t in user_sent_today: continue
             else:
-                # MANUAL: CONFIG MODE
-                # If "Only New" is ON -> Must be new
-                # If "Only New" is OFF -> Show everything (even old active trades)
+                # MANUAL:
+                # If "New Only" is ON -> Skip old signals
+                # If "New Only" is OFF -> SHOW ALL (Ignore is_new)
                 if not manual_input and scan_p['new_only'] and not is_new: continue
-                # We IGNORE user_sent_today in manual mode (show again)
+                # We do NOT skip sent_today in manual mode
             
             # 3. Parameters
             if d['RR'] < scan_p['min_rr']: continue
             if (d['ATR']/d['P'])*100 > scan_p['max_atr']: continue
             
-            # 4. Position Sizing
+            # 4. Risk
             risk_per_share = d['P'] - d['SL']
             if risk_per_share <= 0: continue
             shares = int(scan_p['risk_usd'] / risk_per_share)
@@ -412,15 +452,13 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             
             await context.bot.send_message(chat_id=chat_id, text=card, parse_mode=constants.ParseMode.HTML, disable_web_page_preview=True)
             
-            # Add to history only if auto
             if is_auto: 
                 user_sent_today.add(t)
                 context.user_data['sent_today'] = user_sent_today
                 
             results_found += 1
             
-        except Exception as e:
-            # print(f"Err {t}: {e}")
+        except Exception:
             pass
 
     global last_scan_time
@@ -486,7 +524,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_html(get_help_message())
         return
 
-    # Toggles
     elif "Daily" in text or "Weekly" in text:
         p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
     elif "Only New signals" in text:
@@ -509,7 +546,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['sma'] = opts[(opts.index(current) + 1) % 3]
         except: p['sma'] = 200
 
-    # Input Triggers
     elif "Risk:" in text:
         context.user_data['input_mode'] = "risk_usd"
         await update.message.reply_text("✏️ Enter Risk Amount in $ (e.g., 50):")
@@ -523,7 +559,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✏️ Enter Max ATR % (e.g., 5.0):")
         return
 
-    # Numeric Input
     elif context.user_data.get('input_mode'):
         try:
             val = float(text.replace(',', '.'))
@@ -537,7 +572,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid number. Try again.")
             return
 
-    # Manual Ticker Scan
     elif "," in text or (text.isalpha() and len(text) < 6):
         ts = [x.strip().upper() for x in text.split(",") if x.strip()]
         if ts:
