@@ -20,10 +20,6 @@ from telegram.ext import (
 # --- KONFIGURACIJA ---
 nest_asyncio.apply()
 
-# ⚠️ ВСТАВЬТЕ СВОИ ДАННЫЕ СЮДА ⚠️
-TG_TOKEN = "ВАШ_ТОКЕН_БОТА"
-ADMIN_ID = 123456789  # Ваш ID (число)
-GITHUB_USERS_URL = "ССЫЛКА_НА_RAW_СПИСОК_ЮЗЕРОВ" # Пример: raw.githubusercontent...
 
 # Настройка логгирования
 logging.basicConfig(
@@ -665,4 +661,5 @@ if __name__ == '__main__':
     
     print("Bot is running...")
     application.run_polling(stop_signals=None)
+
 
