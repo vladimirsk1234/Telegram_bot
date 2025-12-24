@@ -8,6 +8,7 @@ import pandas as pd
 import yfinance as yf
 import nest_asyncio
 import streamlit as st
+import os
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import (
@@ -17,7 +18,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     filters,
-    PicklePersistence # <--- ДЛЯ СОХРАНЕНИЯ НАСТРОЕК
+    PicklePersistence
 )
 
 # --- КОНФИГУРАЦИЯ ---
@@ -44,14 +45,13 @@ except Exception as e:
 # ==========================================
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 # ==========================================
-# ACTIVE_USERS не нужен глобально для persistence, он будет в user_data
 last_scan_time = "Никогда"
 sent_today = set()
 
 # Константы индикаторов
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
-# Дефолтные параметры
+# ДЕФОЛТНЫЕ ПАРАМЕТРЫ (БАЗА)
 DEFAULT_PARAMS = {
     'portfolio': 10000.0,
     'min_rr': 1.25,
@@ -184,7 +184,7 @@ def analyze_trade(df, idx):
     }, "OK"
 
 # ==========================================
-# 4. HELPER FUNCTIONS
+# 4. HELPER FUNCTIONS & AUTH
 # ==========================================
 
 def is_market_open():
@@ -208,7 +208,6 @@ def get_allowed_users():
 
 async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Сохраняем активных в user_data чтобы они сохранялись в pickle
     if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
     context.bot_data['active_users'].add(user_id)
     
@@ -217,6 +216,23 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Доступ запрещен.", parse_mode='HTML')
         return False
     return True
+
+# --- ВАЖНАЯ ФУНКЦИЯ ДЛЯ ПАРАМЕТРОВ ---
+async def safe_get_params(context):
+    """
+    Умное получение параметров. 
+    1. Если параметров нет вообще -> грузим Default.
+    2. Если есть, но не все ключи -> дополняем из Default (Fix для сброса).
+    """
+    if 'params' not in context.user_data:
+        context.user_data['params'] = DEFAULT_PARAMS.copy()
+    else:
+        # Проверяем целостность. Если добавились новые ключи в будущем - они не сломают бота.
+        for k, v in DEFAULT_PARAMS.items():
+            if k not in context.user_data['params']:
+                context.user_data['params'][k] = v
+                
+    return context.user_data['params']
 
 def format_luxury_card(ticker, d, shares, is_new, pe_val):
     tv_link = f"https://www.tradingview.com/chart/?symbol={ticker.replace('-', '.')}"
@@ -279,45 +295,27 @@ def get_status_text(status="💤 Ожидание", p=None):
     )
 
 # ==========================================
-# 5. MENUS & UTILS (STICKY BOTTOM)
+# 5. MENUS & UTILS
 # ==========================================
 
 async def refresh_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, p, status="Готов"):
-    """
-    Удаляет старое сообщение и присылает новое внизу.
-    """
+    """Удаляет старое и шлет новое меню внизу."""
     try:
-        # Пытаемся удалить старое сообщение (если это callback или просто текст)
-        if update.callback_query:
-            await update.callback_query.message.delete()
-        elif update.message:
-            # Не удаляем сообщение пользователя, чтобы он видел что ввел, 
-            # но можно удалить предыдущее сообщение бота если сохранить ID.
-            # Для простоты просто шлем новое.
-            pass
+        if update.callback_query: await update.callback_query.message.delete()
+        elif update.message: pass # Не удаляем ввод юзера
     except: pass
     
-    # Шлем новое
-    msg = await context.bot.send_message(
+    await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=get_status_text(status, p),
         reply_markup=get_keyboard(p),
         parse_mode='HTML'
     )
-    # Можно сохранить msg.message_id в user_data чтобы потом его удалять, 
-    # но это усложнит логику. Пока просто "новое сообщение всегда внизу".
-
-async def safe_get_params(context):
-    """Гарантирует, что параметры не сбросятся"""
-    if 'params' not in context.user_data:
-        context.user_data['params'] = DEFAULT_PARAMS.copy()
-    return context.user_data['params']
 
 # ==========================================
 # 6. SCAN PROCESS
 # ==========================================
 async def run_scan_process(update, context, p, tickers, manual_input=False):
-    # Присылаем сообщение статуса (оно будет висеть внизу во время скана)
     status_msg = await context.bot.send_message(
         chat_id=update.effective_chat.id, 
         text="🚀 <b>Начинаю сканирование...</b>", 
@@ -394,11 +392,9 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
     global last_scan_time
     last_scan_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # Удаляем сообщение прогресса
     try: await status_msg.delete()
     except: pass
     
-    # Итоговый отчет
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=f"✅ <b>Скан завершен!</b> Найдено: {results_found}",
@@ -406,12 +402,12 @@ async def run_scan_process(update, context, p, tickers, manual_input=False):
     )
     context.user_data['scanning'] = False
     
-    # ВОЗВРАЩАЕМ МЕНЮ ВНИЗ
+    # Возвращаем меню
     if not manual_input and not scan_p.get('is_auto'):
         await refresh_menu(update, context, p)
 
 # ==========================================
-# 7. HANDLERS
+# 7. HANDLERS (LOGIC FIXES HERE)
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
@@ -419,7 +415,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['scanning'] = False
     context.user_data['input_mode'] = None
     
-    # Первое меню
     await update.message.reply_html(
         get_status_text(p=p),
         reply_markup=get_keyboard(p)
@@ -430,11 +425,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active = context.bot_data.get('active_users', set())
     allowed = get_allowed_users()
     msg = (
-        f"📊 <b>АДМИН</b>\n"
-        f"Активных: {len(active)}\n"
-        f"Whitelist: {len(allowed)}\n"
-        f"Скан: {last_scan_time}\n"
-        f"IDs: {list(active)}"
+        f"📊 <b>АДМИН</b>\nАктивных: {len(active)}\nWhitelist: {len(allowed)}\nСкан: {last_scan_time}\nIDs: {list(active)}"
     )
     await update.message.reply_html(msg)
 
@@ -442,11 +433,17 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    
+    # 1. ЗАГРУЖАЕМ ПАРАМЕТРЫ С ГАРАНТИЕЙ
     p = await safe_get_params(context)
     
-    # Обработка кнопок
-    if data == "toggle_tf": p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
-    elif data == "toggle_new": p['new_only'] = not p['new_only']
+    # 2. ИЗМЕНЯЕМ ТОЛЬКО ОДИН ПАРАМЕТР
+    if data == "toggle_tf": 
+        p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
+    
+    elif data == "toggle_new": 
+        p['new_only'] = not p['new_only']
+    
     elif data == "toggle_auto":
         p['autoscan'] = not p['autoscan']
         if p['autoscan']:
@@ -463,18 +460,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: p['sma'] = 200
         
     elif data == "start_scan":
-        if context.user_data.get('scanning'):
-            await context.bot.send_message(update.effective_chat.id, "⚠️ Уже сканирую!")
-            return
+        if context.user_data.get('scanning'): return
         context.user_data['scanning'] = True
-        
-        # Удаляем старое меню перед сканом
         try: await query.message.delete()
         except: pass
-        
         tickers = get_sp500_tickers()
         asyncio.create_task(run_scan_process(update, context, p, tickers))
-        return # Выход, меню будет отправлено в конце скана
+        return 
 
     elif data == "stop_scan":
         context.user_data['scanning'] = False
@@ -488,7 +480,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(update.effective_chat.id, f"✏️ Введите значение:", parse_mode='HTML')
         return
 
-    # ОБНОВЛЕНИЕ МЕНЮ (Удалить старое -> Прислать новое)
+    # 3. ПРИНУДИТЕЛЬНО СОХРАНЯЕМ ИЗМЕНЕНИЯ В КОНТЕКСТЕ
+    context.user_data['params'] = p
+    
+    # 4. ОБНОВЛЯЕМ МЕНЮ
     await refresh_menu(update, context, p)
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -513,7 +508,8 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif mode == "set_matr": p['max_atr'] = val
         context.user_data['input_mode'] = None
         
-        # Шлем новое меню вниз
+        # Сохраняем и шлем меню
+        context.user_data['params'] = p
         await refresh_menu(update, context, p, status="Параметр обновлен")
         
     except: await update.message.reply_text("❌ Введите число.")
@@ -528,7 +524,6 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     class Dummy: pass
     u = Dummy(); u.effective_chat = Dummy(); u.effective_chat.id = job.chat_id
     
-    # Пытаемся восстановить параметры из persistence
     if 'params' not in context.application.user_data.get(job.user_id, {}):
          context.application.user_data.setdefault(job.user_id, {})['params'] = DEFAULT_PARAMS.copy()
     
@@ -543,10 +538,10 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 if __name__ == '__main__':
     st.title("💎 Vova Screener Bot Running")
-    st.write("Бот запущен с защитой настроек.")
+    st.write("Бот запущен. Параметры изолированы и сохраняются.")
     
-    # Persistence сохраняет данные в файл 'bot_data.pickle'
-    my_persistence = PicklePersistence(filepath='bot_data.pickle')
+    # ⚠️ ВАЖНО: update_interval=1 заставляет сохранять данные ПОСЛЕ КАЖДОГО клика
+    my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     
     application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
