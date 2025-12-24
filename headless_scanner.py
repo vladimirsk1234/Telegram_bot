@@ -10,12 +10,17 @@ import nest_asyncio
 import streamlit as st
 import time
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
+# Импортируем ВСЕ необходимые классы Telegram
+from telegram import (
+    Update, 
+    ReplyKeyboardMarkup, 
+    KeyboardButton, 
+    constants
+)
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
-    CallbackQueryHandler,
     MessageHandler,
     filters,
     PicklePersistence
@@ -215,47 +220,44 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return True
 
 async def safe_get_params(context):
+    """
+    Загружает и восстанавливает параметры.
+    Сначала берет из DEFAULT, потом обновляет тем что есть в user_data.
+    """
     if 'params' not in context.user_data:
         context.user_data['params'] = DEFAULT_PARAMS.copy()
     else:
-        for k, v in DEFAULT_PARAMS.items():
-            if k not in context.user_data['params']:
-                context.user_data['params'][k] = v
+        # Мержим: берем дефолтные и обновляем пользовательскими
+        # Это защищает от ситуации, когда ключи пропадают
+        current = context.user_data['params']
+        new_params = DEFAULT_PARAMS.copy()
+        new_params.update(current)
+        context.user_data['params'] = new_params
                 
     if 'sent_today' not in context.user_data:
         context.user_data['sent_today'] = set()
         
     return context.user_data['params']
 
-# ==================================================
-# 🎨 LUXURY CARD DESIGN (UPDATED)
-# ==================================================
 def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
-    
-    # Status badges
-    status = "⚡ NEW SIGNAL" if is_new else "♻️ UPDATE"
+    badge = "🆕" if is_new else ""
     pe_str = f"{pe_val:.1f}" if pe_val else "N/A"
-    
-    # Calculations
     val_pos = shares * d['P']
     profit = (d['TP'] - d['P']) * shares
     loss = (d['P'] - d['SL']) * shares
     atr_pct = (d['ATR'] / d['P']) * 100
     
-    # --- PROFESSIONAL / LUXURY HTML TEMPLATE ---
-    # Uses <code> for monospaced numbers to align cleanly and look techy
-    
     html = (
         f"<b><a href='{tv_link}'>{ticker}</a></b>  |  {status}\n"
         f"<code>${d['P']:.2f}</code>  (P/E: <code>{pe_str}</code>)\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"<b>📊 POSITION SIZE</b>\n"
+        f"<b>📊 POSITION</b>\n"
         f"• Shares: <code>{shares}</code>\n"
         f"• Value:  <code>${val_pos:.0f}</code>\n"
         f"• R:R:    <code>{d['RR']:.2f}</code>\n\n"
-        f"<b>🎯 TARGETS & STOPS</b>\n"
+        f"<b>🎯 LEVELS</b>\n"
         f"🟢 Target:     <code>{d['TP']:.2f}</code> (<code>+${profit:.0f}</code>)\n"
         f"🔴 Stop Loss:  <code>{d['SL']:.2f}</code> (<code>-${abs(loss):.0f}</code>)\n"
         f"🔸 Crit Level: <code>{d['Crit']:.2f}</code>\n"
@@ -263,22 +265,33 @@ def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     )
     return html
 
+# --- KEYBOARD LOGIC (FIXED) ---
 def get_reply_keyboard(p):
-    # Keyboard text
+    # Текст на кнопках
     risk_txt = f"💸 Risk: ${p['risk_usd']:.0f}"
     rr_txt = f"⚖️ RR: {p['min_rr']}"
     atr_txt = f"📊 ATR: {p['max_atr']}%"
     sma_txt = f"📈 SMA: {p['sma']}"
-    tf_txt = "📅 Daily" if p['tf'] == 'Daily' else "🗓 Weekly"
-    new_txt = "✨ New: ON" if p['new_only'] else "⚪ New: OFF"
-    auto_txt = "🟢 Auto: ON" if p['autoscan'] else "🔴 Auto: OFF"
     
+    tf_txt = "📅 Daily" if p['tf'] == 'Daily' else "🗓 Weekly"
+    
+    # КНОПКИ ПЕРЕИМЕНОВАНЫ ПО ЗАПРОСУ
+    # Используем статус ✅/❌ для наглядности
+    new_status = "✅" if p['new_only'] else "❌"
+    new_txt = f"Only New signals {new_status}"
+    
+    auto_status = "🟢" if p['autoscan'] else "🔴"
+    auto_txt = f"Auto Scan {auto_status}"
+    
+    # Раскладка (KeyboardButton уже импортирован!)
     keyboard = [
         [KeyboardButton(risk_txt), KeyboardButton(rr_txt)],
         [KeyboardButton(atr_txt), KeyboardButton(sma_txt)],
-        [KeyboardButton(tf_txt), KeyboardButton(new_txt), KeyboardButton(auto_txt)],
+        [KeyboardButton(tf_txt), KeyboardButton(new_txt)], 
+        [KeyboardButton(auto_txt)],
         [KeyboardButton("▶️ START SCAN"), KeyboardButton("⏹ STOP SCAN")]
     ]
+    
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 def get_status_text(status="💤 Idle", p=None):
@@ -402,7 +415,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['input_mode'] = None
     
     await update.message.reply_html(
-        "👋 <b>Welcome!</b>\nUse the menu buttons below to control the scanner.",
+        "👋 <b>Welcome!</b>\nUse the menu buttons below.",
         reply_markup=get_reply_keyboard(p)
     )
 
@@ -429,7 +442,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(run_scan_process(update, context, p, tickers))
         return
 
-    elif text == "⏹ STOP SCAN" or text == "⏹ STOP":
+    elif text == "⏹ STOP SCAN":
         context.user_data['scanning'] = False
         await update.message.reply_text("🛑 Stopping...")
         return
@@ -437,9 +450,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Toggles
     elif "Daily" in text or "Weekly" in text:
         p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
-    elif "New: ON" in text or "New: OFF" in text:
+    
+    elif "Only New signals" in text:
         p['new_only'] = not p['new_only']
-    elif "Auto: ON" in text or "Auto: OFF" in text:
+        
+    elif "Auto Scan" in text:
         p['autoscan'] = not p['autoscan']
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
@@ -452,7 +467,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif "SMA:" in text:
         opts = [100, 150, 200]
-        try: p['sma'] = opts[(opts.index(p['sma']) + 1) % 3]
+        try: 
+            # Parse number from button text "📈 SMA: 200"
+            current = int(text.split(":")[1].strip())
+            p['sma'] = opts[(opts.index(current) + 1) % 3]
         except: p['sma'] = 200
 
     # Input Triggers
@@ -524,7 +542,7 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
 # 7. MAIN
 if __name__ == '__main__':
     st.set_page_config(page_title="Vova Bot", page_icon="🤖")
-    st.title("💎 Vova Screener Bot (Reply Keyboard)")
+    st.title("💎 Vova Screener Bot")
     
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
@@ -539,7 +557,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('stats', stats_command))
     
-    # Single MessageHandler for all text (buttons + input)
+    # Single MessageHandler
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
     print("Bot started...")
