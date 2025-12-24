@@ -10,7 +10,6 @@ import nest_asyncio
 import streamlit as st
 import time
 
-# Импортируем ВСЕ необходимые классы Telegram
 from telegram import (
     Update, 
     ReplyKeyboardMarkup, 
@@ -46,9 +45,9 @@ except Exception as e:
     st.stop()
 
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-last_scan_time = "Никогда"
+last_scan_time = "Never"
 
-# Индикаторы
+# Индикаторы (Идентично Web)
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
 # ДЕФОЛТНЫЕ ПАРАМЕТРЫ
@@ -58,17 +57,18 @@ DEFAULT_PARAMS = {
     'max_atr': 5.0,
     'sma': 200,
     'tf': 'Daily',
-    'new_only': True,
+    'new_only': True, # Если True - ищет только сигналы, появившиеся СЕГОДНЯ
     'autoscan': False,
 }
 
-# 3. ЛОГИКА СКРИНЕРА
+# 3. ЛОГИКА СКРИНЕРА (100% COPY FROM WEB APP)
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {"User-Agent": "Mozilla/5.0"}
         html = pd.read_html(requests.get(url, headers=headers).text, header=0)
+        # Yahoo использует дефис (BRK-B), TradingView точку (BRK.B).
         return [t.replace('.', '-') for t in html[0]['Symbol'].tolist()]
     except: return []
 
@@ -79,7 +79,7 @@ def get_financial_info(ticker):
         return i.get('trailingPE') or i.get('forwardPE')
     except: return None
 
-# --- MATH ---
+# --- MATH (IDENTICAL TO WEB) ---
 def calc_sma(s, l): return s.rolling(l).mean()
 def calc_ema(s, l): return s.ewm(span=l, adjust=False).mean()
 def calc_macd(s, f=12, sl=26, sig=9):
@@ -108,79 +108,151 @@ def calc_atr(df, length):
     return tr.ewm(alpha=1/length, adjust=False).mean()
 
 def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
+    # --- Indicators ---
     df['SMA'] = calc_sma(df['Close'], len_maj)
     adx, p_di, m_di = calc_adx_pine(df, adx_len)
-    ema_f = calc_ema(df['Close'], len_fast); ema_s = calc_ema(df['Close'], len_slow)
-    hist = calc_macd(df['Close']); efi = calc_ema(df['Close'].diff() * df['Volume'], len_fast)
+    
+    ema_f = calc_ema(df['Close'], len_fast)
+    ema_s = calc_ema(df['Close'], len_slow)
+    hist = calc_macd(df['Close'])
+    efi = calc_ema(df['Close'].diff() * df['Volume'], len_fast)
     atr = calc_atr(df, atr_len)
     
+    # --- Iterative Structure Logic ---
     n = len(df)
     c_a, h_a, l_a = df['Close'].values, df['High'].values, df['Low'].values
-    seq_st = np.zeros(n, dtype=int); crit_lvl = np.full(n, np.nan)
-    res_peak = np.full(n, np.nan); res_struct = np.zeros(n, dtype=bool)
     
-    s_state = 0; s_crit = np.nan; s_h = h_a[0]; s_l = l_a[0]
-    last_pk = np.nan; last_tr = np.nan; pk_hh = False; tr_hl = False
+    seq_st = np.zeros(n, dtype=int)
+    crit_lvl = np.full(n, np.nan)
+    res_peak = np.full(n, np.nan)
+    res_struct = np.zeros(n, dtype=bool)
+    
+    # State Variables
+    s_state = 0
+    s_crit = np.nan
+    s_h = h_a[0]; s_l = l_a[0]
+    
+    last_pk = np.nan; last_tr = np.nan
+    pk_hh = False; tr_hl = False
     
     for i in range(1, n):
         c, h, l = c_a[i], h_a[i], l_a[i]
-        prev_st = s_state; prev_cr = s_crit; prev_sh = s_h; prev_sl = s_l
+        
+        prev_st = s_state
+        prev_cr = s_crit
+        prev_sh = s_h
+        prev_sl = s_l
+        
         brk = False
         if prev_st == 1 and not np.isnan(prev_cr): brk = c < prev_cr
         elif prev_st == -1 and not np.isnan(prev_cr): brk = c > prev_cr
+            
         if brk:
-            if prev_st == 1:
+            if prev_st == 1: # Bearish
                 is_hh = True if np.isnan(last_pk) else (prev_sh > last_pk)
-                pk_hh = is_hh; last_pk = prev_sh; s_state = -1; s_h = h; s_l = l; s_crit = h
-            else:
+                pk_hh = is_hh
+                last_pk = prev_sh
+                s_state = -1
+                s_h = h; s_l = l
+                s_crit = h
+            else: # Bullish
                 is_hl = True if np.isnan(last_tr) else (prev_sl > last_tr)
-                tr_hl = is_hl; last_tr = prev_sl; s_state = 1; s_h = h; s_l = l; s_crit = l
+                tr_hl = is_hl
+                last_tr = prev_sl
+                s_state = 1
+                s_h = h; s_l = l
+                s_crit = l
         else:
             s_state = prev_st
-            if s_state == 1:
+            
+            if s_state == 1: # Uptrend
                 if h >= s_h: s_h = h
                 if h >= prev_sh: s_crit = l
                 else: s_crit = prev_cr
-            elif s_state == -1:
+                
+            elif s_state == -1: # Downtrend
                 if l <= s_l: s_l = l
                 if l <= prev_sl: s_crit = h
                 else: s_crit = prev_cr
-            else:
-                if c > prev_sh: s_state = 1; s_crit = l
-                elif c < prev_sl: s_state = -1; s_crit = h
-                else: s_h = max(prev_sh, h); s_l = min(prev_sl, l)
-        seq_st[i] = s_state; crit_lvl[i] = s_crit; res_peak[i] = last_pk; res_struct[i] = (pk_hh and tr_hl)
+                
+            else: # Init
+                if c > prev_sh: 
+                    s_state = 1; s_crit = l
+                elif c < prev_sl: 
+                    s_state = -1; s_crit = h
+                else:
+                    s_h = max(prev_sh, h); s_l = min(prev_sl, l)
+        
+        seq_st[i] = s_state
+        crit_lvl[i] = s_crit
+        res_peak[i] = last_pk
+        res_struct[i] = (pk_hh and tr_hl)
 
+    # --- Super Trend Logic ---
     adx_str = adx >= adx_thr
-    bull = (adx_str & (p_di > m_di)) & ((ema_f > ema_f.shift(1)) & (ema_s > ema_s.shift(1)) & (hist > hist.shift(1))) & (efi > 0)
-    bear = (adx_str & (m_di > p_di)) & ((ema_f < ema_f.shift(1)) & (ema_s < ema_s.shift(1)) & (hist < hist.shift(1))) & (efi < 0)
-    t_st = np.zeros(n, dtype=int); t_st[bull] = 1; t_st[bear] = -1
-    df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak; df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
+    
+    bull = (adx_str & (p_di > m_di)) & \
+           ((ema_f > ema_f.shift(1)) & (ema_s > ema_s.shift(1)) & (hist > hist.shift(1))) & \
+           (efi > 0)
+           
+    bear = (adx_str & (m_di > p_di)) & \
+           ((ema_f < ema_f.shift(1)) & (ema_s < ema_s.shift(1)) & (hist < hist.shift(1))) & \
+           (efi < 0)
+           
+    t_st = np.zeros(n, dtype=int)
+    t_st[bull] = 1
+    t_st[bear] = -1
+    
+    df['Seq'] = seq_st
+    df['Crit'] = crit_lvl
+    df['Peak'] = res_peak
+    df['Struct'] = res_struct
+    df['Trend'] = t_st
+    df['ATR'] = atr
+    
     return df
 
 def analyze_trade(df, idx):
     r = df.iloc[idx]
     errs = []
+    
+    # 1. Validation Rules
     if r['Seq'] != 1: errs.append("SEQ!=1")
     if np.isnan(r['SMA']) or r['Close'] <= r['SMA']: errs.append("SMA")
     if r['Trend'] == -1: errs.append("TREND")
     if not r['Struct']: errs.append("STRUCT")
     if np.isnan(r['Peak']) or np.isnan(r['Crit']): errs.append("NO DATA")
+    
     if errs: return False, {}, " ".join(errs)
     
-    price = r['Close']; tp = r['Peak']; crit = r['Crit']; atr = r['ATR']
-    final_sl = min(crit, price - atr)
-    risk = price - final_sl; reward = tp - price
+    # 2. Key Levels
+    price = r['Close']
+    tp = r['Peak']
+    crit = r['Crit']
+    atr = r['ATR']
+    
+    # 3. Safer SL Selection
+    sl_struct = crit
+    sl_atr = price - atr
+    final_sl = min(sl_struct, sl_atr)
+    
+    # 4. Geometry Check
+    risk = price - final_sl
+    reward = tp - price
+    
     if risk <= 0: return False, {}, "BAD STOP"
     if reward <= 0: return False, {}, "AT TARGET"
     
+    # 5. RR
+    rr = reward / risk
+    
     return True, {
         "P": price, "TP": tp, "SL": final_sl, 
-        "RR": reward/risk, "ATR": atr, "Crit": crit,
+        "RR": rr, "ATR": atr, "Crit": crit,
         "SL_Type": "STR" if abs(final_sl - crit) < 0.01 else "ATR"
     }, "OK"
 
-# 4. HELPER FUNCTIONS
+# 4. UI HELPER FUNCTIONS
 
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
@@ -220,19 +292,12 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return True
 
 async def safe_get_params(context):
-    """
-    Загружает и восстанавливает параметры.
-    Сначала берет из DEFAULT, потом обновляет тем что есть в user_data.
-    """
     if 'params' not in context.user_data:
         context.user_data['params'] = DEFAULT_PARAMS.copy()
     else:
-        # Мержим: берем дефолтные и обновляем пользовательскими
-        # Это защищает от ситуации, когда ключи пропадают
-        current = context.user_data['params']
-        new_params = DEFAULT_PARAMS.copy()
-        new_params.update(current)
-        context.user_data['params'] = new_params
+        for k, v in DEFAULT_PARAMS.items():
+            if k not in context.user_data['params']:
+                context.user_data['params'][k] = v
                 
     if 'sent_today' not in context.user_data:
         context.user_data['sent_today'] = set()
@@ -242,8 +307,12 @@ async def safe_get_params(context):
 def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
-    badge = "🆕" if is_new else ""
+    
+    # Status badges
+    status = "⚡ NEW SIGNAL" if is_new else "♻️ UPDATE"
     pe_str = f"{pe_val:.1f}" if pe_val else "N/A"
+    
+    # Calculations
     val_pos = shares * d['P']
     profit = (d['TP'] - d['P']) * shares
     loss = (d['P'] - d['SL']) * shares
@@ -253,7 +322,7 @@ def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
         f"<b><a href='{tv_link}'>{ticker}</a></b>  |  {status}\n"
         f"<code>${d['P']:.2f}</code>  (P/E: <code>{pe_str}</code>)\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"<b>📊 POSITION</b>\n"
+        f"<b>📊 POSITION SIZE</b>\n"
         f"• Shares: <code>{shares}</code>\n"
         f"• Value:  <code>${val_pos:.0f}</code>\n"
         f"• R:R:    <code>{d['RR']:.2f}</code>\n\n"
@@ -265,25 +334,20 @@ def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     )
     return html
 
-# --- KEYBOARD LOGIC (FIXED) ---
 def get_reply_keyboard(p):
-    # Текст на кнопках
     risk_txt = f"💸 Risk: ${p['risk_usd']:.0f}"
     rr_txt = f"⚖️ RR: {p['min_rr']}"
     atr_txt = f"📊 ATR: {p['max_atr']}%"
     sma_txt = f"📈 SMA: {p['sma']}"
-    
     tf_txt = "📅 Daily" if p['tf'] == 'Daily' else "🗓 Weekly"
     
-    # КНОПКИ ПЕРЕИМЕНОВАНЫ ПО ЗАПРОСУ
-    # Используем статус ✅/❌ для наглядности
+    # Кнопки с галочками
     new_status = "✅" if p['new_only'] else "❌"
     new_txt = f"Only New signals {new_status}"
     
     auto_status = "🟢" if p['autoscan'] else "🔴"
     auto_txt = f"Auto Scan {auto_status}"
     
-    # Раскладка (KeyboardButton уже импортирован!)
     keyboard = [
         [KeyboardButton(risk_txt), KeyboardButton(rr_txt)],
         [KeyboardButton(atr_txt), KeyboardButton(sma_txt)],
@@ -291,7 +355,6 @@ def get_reply_keyboard(p):
         [KeyboardButton(auto_txt)],
         [KeyboardButton("▶️ START SCAN"), KeyboardButton("⏹ STOP SCAN")]
     ]
-    
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 def get_status_text(status="💤 Idle", p=None):
@@ -321,6 +384,9 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     scan_p = p.copy() 
     user_sent_today = context.user_data.get('sent_today', set())
 
+    # --- ЛОГ ДЛЯ ОТЛАДКИ ---
+    print(f"DEBUG: Starting scan. Mode: {'Auto' if is_auto else 'Manual'}. NewOnly: {scan_p['new_only']}")
+
     for i, t in enumerate(tickers):
         if not context.user_data.get('scanning', False) and not manual_input:
             await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
@@ -342,31 +408,45 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             inter = "1d" if scan_p['tf'] == "Daily" else "1wk"
             fetch_period = "2y" if scan_p['tf'] == "Daily" else "5y"
             
+            # --- 1. DOWNLOAD DATA (IDENTICAL PARAMS) ---
             df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
             
             if len(df) < scan_p['sma'] + 5:
+                # print(f"DEBUG: {t} -> Not enough data")
                 if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: NO DATA")
                 continue
 
+            # --- 2. RUN LOGIC ---
             df = run_vova_logic(df, scan_p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
+            
+            # --- 3. ANALYZE LAST CANDLE ---
             valid, d, reason = analyze_trade(df, -1)
             
             if not valid:
+                # print(f"DEBUG: {t} -> Invalid ({reason})")
                 if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: {reason}")
                 continue
 
+            # --- 4. CHECK IF NEW ---
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
+            # --- 5. FILTERS (CRITICAL LOGIC FIX) ---
+            # Логика фильтров должна быть ТОЧНО как в вебе
             if is_auto:
                 if not is_new: continue 
                 if t in user_sent_today: continue
             else:
-                if not manual_input and scan_p['new_only'] and not is_new: continue
+                # Если ручной скан и включена галка "New Only" -> пропускаем старые
+                # Если галка выключена -> пропускаем только если НЕ скан всех S&P
+                if not manual_input and scan_p['new_only'] and not is_new: 
+                    # print(f"DEBUG: {t} -> Valid but not new")
+                    continue
             
             if d['RR'] < scan_p['min_rr']: continue
             if (d['ATR']/d['P'])*100 > scan_p['max_atr']: continue
             
+            # --- 6. POSITION SIZING ---
             risk_per_share = d['P'] - d['SL']
             if risk_per_share <= 0: continue
             shares = int(scan_p['risk_usd'] / risk_per_share)
@@ -374,6 +454,8 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
                 if manual_input: await context.bot.send_message(chat_id, f"❌ {t}: Risk too low")
                 continue
             
+            # --- 7. SUCCESS ---
+            print(f"DEBUG: {t} -> SUCCESS! Found signal.")
             pe = get_financial_info(t)
             card = format_luxury_card(t, d, shares, is_new, pe, scan_p['risk_usd'])
             
@@ -390,7 +472,9 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
                 
             results_found += 1
             
-        except: pass
+        except Exception as e:
+            print(f"DEBUG: Error processing {t}: {e}")
+            pass
 
     global last_scan_time
     last_scan_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
