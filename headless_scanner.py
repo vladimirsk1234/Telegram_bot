@@ -49,7 +49,7 @@ except Exception as e:
 # 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 last_scan_time = "Never"
 
-# Индикаторы (Настройки Pine Script)
+# Индикаторы
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
 # ДЕФОЛТНЫЕ ПАРАМЕТРЫ
@@ -63,7 +63,7 @@ DEFAULT_PARAMS = {
     'autoscan': False,
 }
 
-# 3. ЛОГИКА СКРИНЕРА (100% IDENTICAL TO WEB)
+# 3. ЛОГИКА СКРИНЕРА
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
@@ -186,7 +186,6 @@ def analyze_trade(df, idx):
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(tz)
-    # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     if now.weekday() >= 5: return False
     start = now.replace(hour=9, minute=30, second=0, microsecond=0)
     end = now.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -271,6 +270,7 @@ def get_reply_keyboard(p):
     auto_status = "🟢" if p['autoscan'] else "🔴"
     auto_txt = f"Auto Scan {auto_status}"
     
+    # ADDED HELP BUTTON AT THE BOTTOM
     keyboard = [
         [KeyboardButton(risk_txt), KeyboardButton(rr_txt)],
         [KeyboardButton(atr_txt), KeyboardButton(sma_txt)],
@@ -292,6 +292,7 @@ def get_status_text(status="💤 Idle", p=None):
         f"🔍 <b>Filters:</b> {p['tf']} | SMA {p['sma']} | {'Only New' if p['new_only'] else 'All'}"
     )
 
+# --- HELP MESSAGE FUNCTION ---
 def get_help_message():
     return (
         "📚 <b>CONFIGURATION GUIDE</b>\n"
@@ -299,19 +300,23 @@ def get_help_message():
         "<b>💸 Risk $ (Risk Per Trade)</b>\n"
         "Maximum dollar amount you are willing to lose if the trade hits Stop Loss.\n"
         "✅ <i>Range: $10 - $1000+ (Depends on portfolio size)</i>\n\n"
+        
         "<b>⚖️ RR (Risk/Reward Ratio)</b>\n"
         "Minimum potential profit relative to risk. E.g., 1.5 means potential gain is 1.5x larger than loss.\n"
         "✅ <i>Range: 1.5 - 3.0 (Higher is safer)</i>\n\n"
+        
         "<b>📊 ATR % (Volatility Filter)</b>\n"
         "Filters out stocks moving too violently. If ATR > Max %, ticker is skipped.\n"
         "✅ <i>Range: 3% - 10% (Lower = safer stocks)</i>\n\n"
+        
         "<b>📈 SMA (Trend Filter)</b>\n"
         "Only shows stocks trading ABOVE this moving average (100, 150, or 200 days).\n"
         "✅ <i>Recommendation: SMA 200 (Long term trend)</i>\n\n"
+        
         "<b>✨ Only New Signals</b>\n"
         "✅: Shows only signals triggered TODAY.\n"
-        "❌: Shows ALL valid setups (even if triggered days ago).\n"
-        "ℹ️ <i>Manual Scan shows all trades if OFF. Auto Scan ALWAYS shows only new.</i>\n\n"
+        "❌: Shows ALL valid setups (even if triggered days ago).\n\n"
+        
         "<b>🤖 Auto Scan</b>\n"
         "Checks for NEW signals every hour automatically (9:30-16:00 ET). Never repeats a ticker twice a day."
     )
@@ -328,9 +333,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     total = len(tickers)
     scan_p = p.copy() 
     user_sent_today = context.user_data.get('sent_today', set())
-
-    # --- DEBUG LOG ---
-    print(f"DEBUG: Scan Mode: {'Auto' if is_auto else 'Manual'}. NewOnly: {scan_p['new_only']}")
 
     for i, t in enumerate(tickers):
         if not context.user_data.get('scanning', False) and not manual_input:
@@ -368,17 +370,10 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
-            # === LOGIC FIX FOR REPEATING SIGNALS ===
             if is_auto:
-                # AUTO SCAN RULES:
-                # 1. Must be NEW signal (Strict)
-                # 2. Must NOT be sent today (Strict)
                 if not is_new: continue 
                 if t in user_sent_today: continue
             else:
-                # MANUAL SCAN RULES:
-                # 1. Ignore 'user_sent_today' (Show again even if auto showed it)
-                # 2. Respect 'Only New' checkbox
                 if not manual_input and scan_p['new_only'] and not is_new: continue
             
             if d['RR'] < scan_p['min_rr']: continue
@@ -396,7 +391,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             
             await context.bot.send_message(chat_id=chat_id, text=card, parse_mode=constants.ParseMode.HTML, disable_web_page_preview=True)
             
-            # Add to history ONLY for auto scan
             if is_auto: 
                 user_sent_today.add(t)
                 context.user_data['sent_today'] = user_sent_today
@@ -448,6 +442,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     p = await safe_get_params(context)
     
+    # --- BUTTON LOGIC ---
     if text == "▶️ START SCAN":
         if context.user_data.get('scanning'): 
             await update.message.reply_text("⚠️ Scan already running!")
@@ -462,10 +457,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🛑 Stopping...")
         return
 
+    # --- HELP BUTTON HANDLER ---
     elif text == "ℹ️ HELP / INFO":
         await update.message.reply_html(get_help_message())
         return
 
+    # Toggles
     elif "Daily" in text or "Weekly" in text:
         p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
     elif "Only New signals" in text:
@@ -488,6 +485,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['sma'] = opts[(opts.index(current) + 1) % 3]
         except: p['sma'] = 200
 
+    # Input Triggers
     elif "Risk:" in text:
         context.user_data['input_mode'] = "risk_usd"
         await update.message.reply_text("✏️ Enter Risk Amount in $ (e.g., 50):")
@@ -501,6 +499,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✏️ Enter Max ATR % (e.g., 5.0):")
         return
 
+    # --- NUMBER INPUT ---
     elif context.user_data.get('input_mode'):
         try:
             val = float(text.replace(',', '.'))
@@ -514,6 +513,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid number. Try again.")
             return
 
+    # --- MANUAL TICKER INPUT ---
     elif "," in text or (text.isalpha() and len(text) < 6):
         ts = [x.strip().upper() for x in text.split(",") if x.strip()]
         if ts:
@@ -521,6 +521,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await run_scan_process(update, context, p, ts, manual_input=True)
         return
 
+    # SAVE & REFRESH
     context.user_data['params'] = p
     await update.message.reply_text(get_status_text("Ready", p), reply_markup=get_reply_keyboard(p), parse_mode='HTML')
 
