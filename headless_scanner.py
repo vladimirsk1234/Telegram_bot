@@ -10,19 +10,19 @@ import nest_asyncio
 import streamlit as st
 import time
 
-# NOTE: We import ReplyKeyboardMarkup and KeyboardButton now
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, constants
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
+    CallbackQueryHandler,
     MessageHandler,
     filters,
     PicklePersistence
 )
 import telegram.error
 
-# --- CONFIGURATION ---
+# --- КОНФИГУРАЦИЯ ---
 nest_asyncio.apply()
 
 logging.basicConfig(
@@ -31,22 +31,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 1. LOAD SECRETS
+# 1. ЗАГРУЗКА СЕКРЕТОВ
 try:
     TG_TOKEN = st.secrets["TG_TOKEN"]
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
     GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "")
 except Exception as e:
-    st.error(f"❌ Secret Error: {e}")
+    st.error(f"❌ Ошибка секретов: {e}")
     st.stop()
 
-# 2. GLOBALS
-last_scan_time = "Never"
+# 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
+last_scan_time = "Никогда"
 
-# Indicators
+# Индикаторы
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
-# DEFAULT PARAMS
+# ДЕФОЛТНЫЕ ПАРАМЕТРЫ
 DEFAULT_PARAMS = {
     'risk_usd': 50.0,
     'min_rr': 1.25,
@@ -57,7 +57,7 @@ DEFAULT_PARAMS = {
     'autoscan': False,
 }
 
-# 3. SCREENER LOGIC (Same as before)
+# 3. ЛОГИКА СКРИНЕРА
 @st.cache_data(ttl=3600)
 def get_sp500_tickers():
     try:
@@ -180,6 +180,7 @@ def analyze_trade(df, idx):
 def is_market_open():
     tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(tz)
+    # 0=Mon, 4=Fri, 5=Sat, 6=Sun
     if now.weekday() >= 5: return False
     start = now.replace(hour=9, minute=30, second=0, microsecond=0)
     end = now.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -226,48 +227,58 @@ async def safe_get_params(context):
         
     return context.user_data['params']
 
+# ==================================================
+# 🎨 LUXURY CARD DESIGN (UPDATED)
+# ==================================================
 def format_luxury_card(ticker, d, shares, is_new, pe_val, risk_usd):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
-    badge = "🆕" if is_new else ""
-    pe_str = f"| P/E: <b>{pe_val:.0f}</b>" if pe_val else ""
+    
+    # Status badges
+    status = "⚡ NEW SIGNAL" if is_new else "♻️ UPDATE"
+    pe_str = f"{pe_val:.1f}" if pe_val else "N/A"
+    
+    # Calculations
     val_pos = shares * d['P']
     profit = (d['TP'] - d['P']) * shares
     loss = (d['P'] - d['SL']) * shares
     atr_pct = (d['ATR'] / d['P']) * 100
     
-    return (
-        f"💎 <b><a href='{tv_link}'>{ticker}</a></b> {badge}\n"
-        f"💵 <b>{d['P']:.2f}</b> {pe_str}\n"
-        f"💼 <b>POS:</b> {shares} (<b>${val_pos:.0f}</b>) | ⚖️ <b>R:R:</b> {d['RR']:.2f}\n"
-        f"🎯 <b>TP:</b> {d['TP']:.2f} (<span class='tg-spoiler'>+${profit:.0f}</span>)\n"
-        f"🛑 <b>SL:</b> {d['SL']:.2f} (<span class='tg-spoiler'>-${loss:.0f}</span>) [{d['SL_Type']}]\n"
-        f"📉 <b>Crit:</b> {d['Crit']:.2f}\n"
-        f"📊 <b>ATR:</b> {d['ATR']:.2f} ({atr_pct:.1f}%)"
-    )
-
-# --- NEW: REPLY KEYBOARD FUNCTION ---
-def get_reply_keyboard(p):
-    """Generates the persistent custom keyboard layout."""
+    # --- PROFESSIONAL / LUXURY HTML TEMPLATE ---
+    # Uses <code> for monospaced numbers to align cleanly and look techy
     
-    # Status Indicators in Text
+    html = (
+        f"<b><a href='{tv_link}'>{ticker}</a></b>  |  {status}\n"
+        f"<code>${d['P']:.2f}</code>  (P/E: <code>{pe_str}</code>)\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<b>📊 POSITION SIZE</b>\n"
+        f"• Shares: <code>{shares}</code>\n"
+        f"• Value:  <code>${val_pos:.0f}</code>\n"
+        f"• R:R:    <code>{d['RR']:.2f}</code>\n\n"
+        f"<b>🎯 TARGETS & STOPS</b>\n"
+        f"🟢 Target:     <code>{d['TP']:.2f}</code> (<code>+${profit:.0f}</code>)\n"
+        f"🔴 Stop Loss:  <code>{d['SL']:.2f}</code> (<code>-${abs(loss):.0f}</code>)\n"
+        f"🔸 Crit Level: <code>{d['Crit']:.2f}</code>\n"
+        f"🔹 ATR Vol:    <code>{d['ATR']:.2f}</code> (<code>{atr_pct:.1f}%</code>)"
+    )
+    return html
+
+def get_reply_keyboard(p):
+    # Keyboard text
     risk_txt = f"💸 Risk: ${p['risk_usd']:.0f}"
     rr_txt = f"⚖️ RR: {p['min_rr']}"
     atr_txt = f"📊 ATR: {p['max_atr']}%"
     sma_txt = f"📈 SMA: {p['sma']}"
-    
     tf_txt = "📅 Daily" if p['tf'] == 'Daily' else "🗓 Weekly"
     new_txt = "✨ New: ON" if p['new_only'] else "⚪ New: OFF"
     auto_txt = "🟢 Auto: ON" if p['autoscan'] else "🔴 Auto: OFF"
     
-    # Layout (Rows of Buttons)
     keyboard = [
         [KeyboardButton(risk_txt), KeyboardButton(rr_txt)],
         [KeyboardButton(atr_txt), KeyboardButton(sma_txt)],
         [KeyboardButton(tf_txt), KeyboardButton(new_txt), KeyboardButton(auto_txt)],
         [KeyboardButton("▶️ START SCAN"), KeyboardButton("⏹ STOP SCAN")]
     ]
-    
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 def get_status_text(status="💤 Idle", p=None):
@@ -283,12 +294,9 @@ def get_status_text(status="💤 Idle", p=None):
 
 # 5. SCAN PROCESS
 async def run_scan_process(update, context, p, tickers, manual_input=False, is_auto=False):
-    # Use standard text messages for updates, no inline editing for safety
     start_txt = "🤖 <b>AutoScan Started...</b>" if is_auto else "🚀 <b>Scanning Started...</b>"
-    
     chat_id = update.effective_chat.id
     
-    # Send initial status
     status_msg = await context.bot.send_message(
         chat_id=chat_id, 
         text=start_txt, 
@@ -301,12 +309,10 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     user_sent_today = context.user_data.get('sent_today', set())
 
     for i, t in enumerate(tickers):
-        # Stop Check
         if not context.user_data.get('scanning', False) and not manual_input:
             await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
 
-        # Progress Update (Edit message every 10 tickers)
         if i % 10 == 0 or i == total - 1:
             pct = int((i + 1) / total * 10)
             bar = "█" * pct + "░" * (10 - pct)
@@ -339,7 +345,6 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
-            # Filters
             if is_auto:
                 if not is_new: continue 
                 if t in user_sent_today: continue
@@ -377,12 +382,10 @@ async def run_scan_process(update, context, p, tickers, manual_input=False, is_a
     global last_scan_time
     last_scan_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # Final Report
     final_txt = f"✅ <b>Scan Complete!</b> Found: {results_found}"
     await context.bot.send_message(chat_id=chat_id, text=final_txt, parse_mode='HTML')
     context.user_data['scanning'] = False
     
-    # Refresh Reply Keyboard (Send status message with keyboard)
     if not is_auto:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -417,7 +420,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p = await safe_get_params(context)
     
     # --- BUTTON LOGIC ---
-    
     if text == "▶️ START SCAN":
         if context.user_data.get('scanning'): 
             await update.message.reply_text("⚠️ Scan already running!")
@@ -435,10 +437,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Toggles
     elif "Daily" in text or "Weekly" in text:
         p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
-    
     elif "New: ON" in text or "New: OFF" in text:
         p['new_only'] = not p['new_only']
-        
     elif "Auto: ON" in text or "Auto: OFF" in text:
         p['autoscan'] = not p['autoscan']
         chat_id = update.effective_chat.id
@@ -469,7 +469,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✏️ Enter Max ATR % (e.g., 5.0):")
         return
 
-    # --- NUMBER INPUT LOGIC ---
+    # --- NUMBER INPUT ---
     elif context.user_data.get('input_mode'):
         try:
             val = float(text.replace(',', '.'))
@@ -491,7 +491,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await run_scan_process(update, context, p, ts, manual_input=True)
         return
 
-    # SAVE & REFRESH KEYBOARD
+    # SAVE & REFRESH
     context.user_data['params'] = p
     await update.message.reply_text(
         get_status_text("Ready", p),
@@ -526,7 +526,6 @@ if __name__ == '__main__':
     st.set_page_config(page_title="Vova Bot", page_icon="🤖")
     st.title("💎 Vova Screener Bot (Reply Keyboard)")
     
-    # Web Dashboard Info
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
     market_open = is_market_open()
