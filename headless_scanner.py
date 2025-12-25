@@ -472,6 +472,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>Only New:</b>\n"
             "✅ = Signal appeared on the LAST closed bar only.\n"
             "❌ = Shows all valid active trends.\n\n"
+            "<b>🔍 Manual Scan:</b>\n"
+            "Type tickers separated by commas (e.g. <code>AAPL, TSLA, NVDA</code>) in the message window to scan/diagnose them immediately.\n\n"
             "<b>Scanning:</b>\n"
             "Changing parameters <b>during</b> a scan will apply to <i>remaining</i> tickers immediately."
         )
@@ -609,6 +611,7 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
 
 
 
