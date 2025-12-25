@@ -235,10 +235,14 @@ def analyze_trade(df, idx):
 # 4. UI: DASHBOARD STYLE
 # ==========================================
 def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
-    # 1. DATA PREPARATION (Visuals only, no logic changes)
+    # 1. DATA PREPARATION
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
+    # Financials (Robust string handling)
+    pe_str = str(info.get('pe', 'N/A'))
+    mc_str = str(info.get('mc', 'N/A'))
+
     # ATR Visuals
     atr_pct = (d['ATR'] / d['Close']) * 100
     
@@ -247,31 +251,73 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
     seq_emo = "🟢" if d['Seq'] == 1 else ("🔴" if d['Seq'] == -1 else "🟡")
     ma_emo = "🟢" if d['Close'] > d['SMA'] else "🔴"
     
-    # Header Status
-    status_icon = "🆕" if is_new else "♻️"
-
-    # Financials (Ensure string format)
-    pe_str = str(info.get('pe', 'N/A'))
-    mc_str = str(info.get('mc', 'N/A'))
-
-    # Trade Math (For display only)
-    profit = (d['TP'] - d['P']) * shares
-    loss = (d['P'] - d['SL']) * shares # Result is negative
+    # 2. VALIDATION LOGIC (Mirroring Pine Script)
+    # Structural Checks
+    cond_seq = d['Seq'] == 1
+    cond_ma = d['Close'] > d['SMA']
+    cond_trend = d['Trend'] != -1
+    cond_struct = d.get('Struct', False) # Default to False if missing
     
-    # RR Logic (Show ❌ if invalid/negative)
-    rr_str = f"{d['RR']:.2f}" if d['RR'] > 0 else "❌"
+    is_valid_setup = cond_seq and cond_ma and cond_trend and cond_struct
+    
+    # Math Checks
+    risk = d['P'] - d['SL']
+    reward = d['TP'] - d['P']
+    is_valid_math = risk > 0 and reward > 0
 
-    # 2. HTML CONSTRUCTION (Strict Layout Rules)
-    html = (
-        f"{status_icon} <b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
-        f"Size: {shares} shares\n"
+    # 3. HTML CONSTRUCTION
+    # Shared Header (Ticker, Price, Financials, Context)
+    header = f"<b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
+    
+    # Context Block (Always visible)
+    context_block = (
         f"MC: {mc_str} | P/E: {pe_str}\n"
         f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
         f"Trend {trend_emo}  Seq {seq_emo}  MA200 {ma_emo}\n"
-        f"🛑 SL: {d['SL']:.2f}  (-${abs(loss):.0f})\n"
-        f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
-        f"⚖️ Risk/Reward: {rr_str}"
     )
+
+    if is_valid_setup and is_valid_math:
+        # --- VALID TRADE CARD ---
+        status_icon = "🆕" if is_new else "♻️"
+        
+        # Trade Math
+        profit = reward * shares
+        loss = risk * shares # Positive number for calculation
+        rr_str = f"{d['RR']:.2f}"
+
+        html = (
+            f"{status_icon} {header}"
+            f"Size: {shares} shares\n"
+            f"{context_block}"
+            f"🛑 SL: {d['SL']:.2f}  (-${loss:.0f})\n"
+            f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
+            f"⚖️ Risk/Reward: {rr_str}"
+        )
+    else:
+        # --- NO SETUP / INVALID CARD (For Manual Scan) ---
+        # Construct Debug String (Pine Script Logic)
+        reasons = []
+        
+        # 1. Structural Failures
+        if not cond_seq: reasons.append("Seq❌")
+        if not cond_ma: reasons.append("MA❌")
+        if not cond_trend: reasons.append("Trend❌")
+        if not cond_struct: reasons.append("Struct❌")
+        
+        # 2. Math Failures
+        # We check these even if structure failed, to give full diagnosis
+        if risk <= 0:
+            reasons.append("❌RR NEGATIVE")
+        elif reward <= 0:
+            reasons.append("❌ABOVE HH")
+
+        fail_str = " ".join(reasons) if reasons else "UNKNOWN ERROR"
+
+        html = (
+            f"⛔ {header}"
+            f"{context_block}"
+            f"<b>NO SETUP:</b> {fail_str}"
+        )
     
     return html
 # ==========================================
@@ -561,4 +607,5 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
 
