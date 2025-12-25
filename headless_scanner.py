@@ -261,8 +261,7 @@ def analyze_trade(df, idx):
 # ==========================================
 # 4. UI: DASHBOARD STYLE (PREMIUM)
 # ==========================================
-# ВНИМАНИЕ: Убедитесь, что sma_len добавлен в скобки ниже! 👇
-def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len): 
+def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
@@ -285,12 +284,10 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
     is_valid_math = risk > 0 and reward > 0
 
     header = f"<b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
-    
-    # Теперь sma_len (например, 200) будет корректно подставляться сюда:
     context_block = (
         f"MC: {mc_str} | P/E: {pe_str}\n"
         f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
-        f"Trend {trend_emo}  Seq {seq_emo}  MA{sma_len} ${d['SMA']:.2f} {ma_emo}\n"
+        f"Trend {trend_emo}  Seq {seq_emo}  MA200 {ma_emo}\n"
     )
 
     if is_valid_setup and is_valid_math:
@@ -321,81 +318,46 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
         html = f"⛔ {header}{context_block}<b>NO SETUP:</b> {fail_str}"
     
     return html
+
 # ==========================================
 # 5. SCANNING PROCESS
 # ==========================================
 async def run_scan_process(update, context, p, tickers, manual_mode=False):
     chat_id = update.effective_chat.id
-    
-    # 1. Формируем строку с текущими настройками для отображения
-    config_display = (
-        f"⚙️ <b>Active Settings:</b>\n"
-        f"Risk ${p['risk_usd']:.0f} | RR {p['min_rr']} | SMA {p['sma']} | ATR {p['max_atr']}%\n"
-        f"TF: {p['tf']} | New Only: {'✅' if p['new_only'] else '❌'}"
-    )
-
-    # 2. Отправляем начальное сообщение с настройками
-    status_msg = await context.bot.send_message(
-        chat_id=chat_id, 
-        text=f"🔎 <b>Scanning {len(tickers)} tickers...</b>\n\n{config_display}", 
-        parse_mode='HTML'
-    )
-    
+    status_msg = await context.bot.send_message(chat_id=chat_id, text=f"🔎 <b>Scanning {len(tickers)} tickers...</b>", parse_mode='HTML')
     results_found = 0
     total = len(tickers)
     
     for i, t in enumerate(tickers):
-        # Проверка флага остановки
         if not context.user_data.get('scanning', False):
             await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
-            
-        # Обновление прогресс-бара (каждые 10 тикеров)
         if i % 10 == 0 or i == total - 1:
             try:
                 pct = int((i + 1) / total * 10)
                 bar = "█" * pct + "░" * (10 - pct)
-                percent_num = int((i+1)/total*100)
-                
-                # Обновляем сообщение: Прогресс + Текущий Тикер + Настройки внизу
-                await status_msg.edit_text(
-                    f"<b>SCAN:</b> {i+1}/{total} ({percent_num}%)\n"
-                    f"[{bar}]\n"
-                    f"👉 <i>Checking: {t}</i>\n\n"
-                    f"{config_display}", 
-                    parse_mode='HTML'
-                )
+                await status_msg.edit_text(f"<b>SCAN:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n<i>{t}</i>", parse_mode='HTML')
             except: pass
-            
         if i % 50 == 0: gc.collect()
         
         try:
             await asyncio.sleep(0.01)
             inter = "1d" if p['tf'] == "Daily" else "1wk"
             fetch_period = "2y" if p['tf'] == "Daily" else "5y"
-            
-            # Скачивание данных
             df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
-            
             if len(df) < p['sma'] + 5:
                 if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t}</b>: Not enough data", parse_mode='HTML')
                 continue
             
-            # Логика стратегии
             df = run_vova_logic(df, p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
             valid, d, errs = analyze_trade(df, -1)
-            
-            # Проверка "New Only"
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
             show_card = False
-            if manual_mode: 
-                show_card = True
+            if manual_mode: show_card = True
             elif valid:
-                if p['new_only'] and not is_new: 
-                    show_card = False
-                # Дополнительные фильтры (RR, ATR)
+                if p['new_only'] and not is_new: show_card = False
                 elif d['RR'] >= p['min_rr'] and (d['ATR']/d['P'])*100 <= p['max_atr']:
                     risk_per_share = d['P'] - d['SL']
                     if risk_per_share > 0:
@@ -409,7 +371,6 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
                 card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'])
                 await context.bot.send_message(chat_id=chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
                 results_found += 1
-                
         except Exception as e:
             if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t} Error:</b> {str(e)}", parse_mode='HTML')
             continue
@@ -686,10 +647,4 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
-
-
-
-
-
-
 
