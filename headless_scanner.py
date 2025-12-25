@@ -395,12 +395,28 @@ def get_allowed_users():
 
 async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    
+    # 1. Проверка доступа
     if user_id not in get_allowed_users(): 
-        try: await update.message.reply_html("⛔ <b>Access Denied</b>")
+        try: 
+            # Сообщение для неавторизованных пользователей
+            msg = (
+                f"🛑 <b>Authorization Required</b>\n\n"
+                f"👋 <b>Welcome!</b> This is a private quantitative scanner.\n"
+                f"To get access, you need to be approved by the administrator.\n\n"
+                f"📩 Please send your ID number to <b>@Vova_Skl</b>:\n\n"
+                f"🆔 <b>Your ID:</b> <code>{user_id}</code>\n"
+                f"<i>(Click the number to copy)</i>"
+            )
+            await update.message.reply_html(msg)
         except: pass
         return False
-    if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
+    
+    # 2. Логирование активных пользователей (для /stats)
+    if 'active_users' not in context.bot_data:
+        context.bot_data['active_users'] = set()
     context.bot_data['active_users'].add(user_id)
+    
     return True
 
 async def safe_get_params(context):
@@ -631,4 +647,5 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
 
