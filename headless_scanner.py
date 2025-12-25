@@ -6,11 +6,11 @@ import requests
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import nest_asyncio
 import streamlit as st
 import time
 import os
 import gc
+import threading
 
 from telegram import (
     Update, 
@@ -24,12 +24,13 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     filters,
-    PicklePersistence
+    PicklePersistence,
+    Application
 )
 import telegram.error
 
-# --- КОНФИГУРАЦИЯ ---
-nest_asyncio.apply()
+# --- CONFIGURATION ---
+# We do NOT use nest_asyncio anymore. We manage the loop manually.
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -37,22 +38,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 1. ЗАГРУЗКА СЕКРЕТОВ
+# 1. LOAD SECRETS
 try:
     TG_TOKEN = st.secrets["TG_TOKEN"]
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
     GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "")
 except Exception as e:
-    st.error(f"❌ Ошибка секретов: {e}")
+    st.error(f"❌ Secret Error: {e}")
     st.stop()
 
-# 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-last_scan_time = "Never"
-
-# Индикаторы (Настройки Pine Script)
+# 2. GLOBAL SETTINGS
+# Indicators (Pine Script Settings)
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 
-# ДЕФОЛТНЫЕ ПАРАМЕТРЫ
 DEFAULT_PARAMS = {
     'risk_usd': 50.0,
     'min_rr': 1.25,
@@ -63,7 +61,7 @@ DEFAULT_PARAMS = {
 }
 
 # ==========================================
-# 3. МАТЕМАТИКА И ЛОГИКА
+# 3. CORE LOGIC (MATH & DATA)
 # ==========================================
 
 @st.cache_data(ttl=3600)
@@ -85,17 +83,17 @@ def format_market_cap(val):
     except: return "N/A"
 
 def get_extended_info(ticker):
-    # Получаем данные для Dashboard (MC, PE) безопасно
+    # Robust data fetching that won't crash the bot
     try:
         t = yf.Ticker(ticker)
-        # fast_info работает быстрее и надежнее, чем info
+        # Try fast_info first (newer API)
         try:
             mc = t.fast_info['market_cap']
         except:
             mc = None
             
         try:
-            # Для PE все еще нужен .info, но он может тормозить
+            # Fallback to standard info
             i = t.info
             pe = i.get('trailingPE') or i.get('forwardPE')
         except:
@@ -136,7 +134,7 @@ def calc_atr(df, length):
     tr = pd.concat([h-l, (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1/length, adjust=False).mean()
 
-# --- STRATEGY CORE ---
+# --- STRATEGY ---
 def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     df['SMA'] = calc_sma(df['Close'], len_maj)
     adx, p_di, m_di = calc_adx_pine(df, adx_len)
@@ -214,8 +212,6 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
 
 def analyze_trade(df, idx):
     r = df.iloc[idx]
-    
-    # Собираем данные
     price = r['Close']; tp = r['Peak']; crit = r['Crit']; atr = r['ATR']
     sma = r['SMA']
     
@@ -234,27 +230,22 @@ def analyze_trade(df, idx):
         "Close": price
     }
     
-    # Валидация
     errs = []
-    if r['Seq'] != 1: errs.append("SEQ!=1")
-    if np.isnan(sma) or price <= sma: errs.append("SMA")
-    if r['Trend'] == -1: errs.append("TREND")
-    if not r['Struct']: errs.append("STRUCT")
-    if np.isnan(tp) or np.isnan(crit): errs.append("NO DATA")
-    if risk <= 0: errs.append("BAD STOP")
+    if r['Seq'] != 1: errs.append("Seq❌")
+    if np.isnan(sma) or price <= sma: errs.append("MA❌")
+    if r['Trend'] == -1: errs.append("Trend❌")
+    if not r['Struct']: errs.append("Struct❌")
     
     valid = len(errs) == 0
     return valid, data, errs
 
 # ==========================================
-# 4. UI: DASHBOARD STYLE
+# 4. CARD FORMATTING
 # ==========================================
-
 def format_dashboard_card(ticker, d, shares, is_new, info, p):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
-    # 1. EMOJIS & LIGHTS
     atr_pct = (d['ATR'] / d['Close']) * 100
     atr_emo = "🟢"
     if atr_pct > 5.0: atr_emo = "🔴"
@@ -264,15 +255,12 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p):
     seq_emo = "🟢" if d['Seq'] == 1 else ("🔴" if d['Seq'] == -1 else "🟡")
     ma_emo = "🟢" if d['Close'] > d['SMA'] else "🔴"
     
-    # 2. VALIDATION
     cond_seq = d['Seq'] == 1
     cond_ma = d['Close'] > d['SMA']
     cond_trend = d['Trend'] != -1
     cond_struct = d['Struct']
-    
     is_valid = cond_seq and cond_ma and cond_trend and cond_struct
     
-    # 3. HTML BUILD
     html = f"🖥 <b><a href='{tv_link}'>{ticker}</a></b>\n"
     html += f"PE: {info['pe']} | MC: {info['mc']}\n"
     html += f"ATR: {d['ATR']:.4f} ({atr_pct:.2f}%) {atr_emo}\n"
@@ -296,132 +284,83 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p):
         if not cond_ma: reasons.append("MA❌")
         if not cond_trend: reasons.append("Trend❌")
         if not cond_struct: reasons.append("Struct❌")
-        
         fail_str = " ".join(reasons) if reasons else "RISK/DATA❌"
         html += f"<b>NO SETUP:</b> {fail_str}"
 
     return html
 
 # ==========================================
-# 5. SCAN PROCESS (AUTO & MANUAL)
+# 5. SCANNING PROCESS
 # ==========================================
 async def run_scan_process(update, context, p, tickers, manual_mode=False):
     chat_id = update.effective_chat.id
-    
-    start_txt = f"🔎 <b>Scanning {len(tickers)} tickers...</b>"
-    status_msg = await context.bot.send_message(chat_id=chat_id, text=start_txt, parse_mode=constants.ParseMode.HTML)
+    status_msg = await context.bot.send_message(chat_id=chat_id, text=f"🔎 <b>Scanning {len(tickers)} tickers...</b>", parse_mode='HTML')
     
     results_found = 0
     total = len(tickers)
-    scan_p = p.copy() 
-
-    gc.collect()
-
+    
     for i, t in enumerate(tickers):
         if not context.user_data.get('scanning', False):
             await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
             
+        # UI Update every 10 tickers
         if i % 10 == 0 or i == total - 1:
             try:
                 pct = int((i + 1) / total * 10)
                 bar = "█" * pct + "░" * (10 - pct)
-                await status_msg.edit_text(
-                    f"<b>SCAN:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n"
-                    f"<i>{t}</i>", 
-                    parse_mode='HTML'
-                )
+                await status_msg.edit_text(f"<b>SCAN:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n<i>{t}</i>", parse_mode='HTML')
             except: pass
             
         if i % 50 == 0: gc.collect()
 
         try:
-            await asyncio.sleep(0.01) 
+            # Data Fetch
+            await asyncio.sleep(0.01)
+            inter = "1d" if p['tf'] == "Daily" else "1wk"
+            fetch_period = "2y" if p['tf'] == "Daily" else "5y"
             
-            inter = "1d" if scan_p['tf'] == "Daily" else "1wk"
-            fetch_period = "2y" if scan_p['tf'] == "Daily" else "5y"
+            df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
             
-            # --- DATA FETCHING ---
-            df = yf.download(
-                t, 
-                period=fetch_period, 
-                interval=inter, 
-                progress=False, 
-                auto_adjust=False, 
-                multi_level_index=False
-            )
-            
-            if len(df) < scan_p['sma'] + 5:
-                # Если ручной режим - теперь мы УВИДИМ ошибку
-                if manual_mode:
-                    await context.bot.send_message(chat_id, f"⚠️ <b>{t}</b>: Not enough data (Loaded {len(df)} bars)", parse_mode='HTML')
+            if len(df) < p['sma'] + 5:
+                if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t}</b>: Not enough data", parse_mode='HTML')
                 continue
 
-            # --- LOGIC ---
-            df = run_vova_logic(df, scan_p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
-            
+            # Logic
+            df = run_vova_logic(df, p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
             valid, d, errs = analyze_trade(df, -1)
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
+            # Decision
             show_card = False
-            
             if manual_mode:
-                show_card = True 
-            else:
-                if valid:
-                    if scan_p['new_only'] and not is_new: 
-                        show_card = False
-                    else:
-                        if d['RR'] >= scan_p['min_rr'] and (d['ATR']/d['P'])*100 <= scan_p['max_atr']:
-                             risk_per_share = d['P'] - d['SL']
-                             if risk_per_share > 0:
-                                 shares = int(scan_p['risk_usd'] / risk_per_share)
-                                 if shares >= 1: show_card = True
+                show_card = True
+            elif valid:
+                if p['new_only'] and not is_new:
+                    show_card = False
+                elif d['RR'] >= p['min_rr'] and (d['ATR']/d['P'])*100 <= p['max_atr']:
+                    shares = int(p['risk_usd'] / (d['P'] - d['SL']))
+                    if shares >= 1: show_card = True
             
             if show_card:
-                # Безопасное получение инфо
                 info = get_extended_info(t)
-                
                 risk_per_share = d['P'] - d['SL']
-                shares = 0
-                if risk_per_share > 0:
-                    shares = int(scan_p['risk_usd'] / risk_per_share)
-                
-                card = format_dashboard_card(t, d, shares, is_new, info, scan_p['risk_usd'])
-                await context.bot.send_message(chat_id=chat_id, text=card, parse_mode=constants.ParseMode.HTML, disable_web_page_preview=True)
+                shares = int(p['risk_usd'] / risk_per_share) if risk_per_share > 0 else 0
+                card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'])
+                await context.bot.send_message(chat_id=chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
                 results_found += 1
             
         except Exception as e:
-            # ТЕПЕРЬ МЫ ВИДИМ ОШИБКИ В ЧАТЕ
-            if manual_mode:
-                await context.bot.send_message(chat_id, f"⚠️ <b>{t} Error:</b> {str(e)}", parse_mode='HTML')
-            pass
+            if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t} Error:</b> {str(e)}", parse_mode='HTML')
+            continue
 
-    global last_scan_time
-    last_scan_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    
-    final_txt = (
-        f"🏁 <b>SCAN COMPLETE</b>\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"✅ <b>Found:</b> {results_found}\n"
-        f"📊 <b>Total:</b> {total}\n"
-    )
-    await context.bot.send_message(chat_id=chat_id, text=final_txt, parse_mode='HTML')
+    await context.bot.send_message(chat_id=chat_id, text=f"🏁 <b>SCAN COMPLETE</b>\n✅ Found: {results_found}", parse_mode='HTML')
     context.user_data['scanning'] = False
 
 # ==========================================
-# 6. HELPER FUNCTIONS & HANDLERS
+# 6. BOT HANDLERS & HELPERS
 # ==========================================
-
-def is_market_open():
-    tz = pytz.timezone('US/Eastern')
-    now = datetime.datetime.now(tz)
-    if now.weekday() >= 5: return False
-    start = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    end = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    return start <= now <= end
-
 def get_allowed_users():
     allowed = {ADMIN_ID}
     if not GITHUB_USERS_URL: return allowed
@@ -435,145 +374,61 @@ def get_allowed_users():
 
 async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
-    context.bot_data['active_users'].add(user_id)
-    allowed = get_allowed_users()
-    if user_id not in allowed:
-        return False
+    if user_id not in get_allowed_users(): return False
     return True
 
 async def safe_get_params(context):
-    if 'params' not in context.user_data:
-        context.user_data['params'] = DEFAULT_PARAMS.copy()
-    else:
-        current = context.user_data['params']
-        new_params = DEFAULT_PARAMS.copy()
-        new_params.update(current)
-        context.user_data['params'] = new_params
+    if 'params' not in context.user_data: context.user_data['params'] = DEFAULT_PARAMS.copy()
     return context.user_data['params']
 
 def get_reply_keyboard(p):
-    risk_txt = f"💸 Risk: ${p['risk_usd']:.0f}"
-    rr_txt = f"⚖️ RR: {p['min_rr']}"
-    atr_txt = f"📊 ATR: {p['max_atr']}%"
-    sma_txt = f"📈 SMA: {p['sma']}"
-    tf_txt = "📅 Daily" if p['tf'] == 'Daily' else "🗓 Weekly"
-    new_status = "✅" if p['new_only'] else "❌"
-    new_txt = f"Only New signals {new_status}"
-    
-    keyboard = [
-        [KeyboardButton(risk_txt), KeyboardButton(rr_txt)],
-        [KeyboardButton(atr_txt), KeyboardButton(sma_txt)],
-        [KeyboardButton(tf_txt), KeyboardButton(new_txt)], 
+    risk = f"💸 Risk: ${p['risk_usd']:.0f}"
+    rr = f"⚖️ RR: {p['min_rr']}"
+    atr = f"📊 ATR: {p['max_atr']}%"
+    sma = f"📈 SMA: {p['sma']}"
+    tf = "📅 Daily" if p['tf'] == 'Daily' else "🗓 Weekly"
+    new = f"Only New {'✅' if p['new_only'] else '❌'}"
+    return ReplyKeyboardMarkup([
+        [KeyboardButton(risk), KeyboardButton(rr)],
+        [KeyboardButton(atr), KeyboardButton(sma)],
+        [KeyboardButton(tf), KeyboardButton(new)], 
         [KeyboardButton("▶️ START SCAN"), KeyboardButton("⏹ STOP SCAN")],
-        [KeyboardButton("ℹ️ HELP / INFO")] 
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
-
-def get_status_text(status="💤 Idle", p=None):
-    if not p: return f"Status: {status}"
-    return (
-        f"🖥 <b>Vova Screener Bot</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"⚙️ <b>Status:</b> {status}\n"
-        f"🕒 <b>Last Scan:</b> {last_scan_time}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>Config:</b> Risk <b>${p['risk_usd']}</b> (Min RR: {p['min_rr']})\n"
-        f"🔍 <b>Filters:</b> {p['tf']} | SMA {p['sma']} | {'Only New' if p['new_only'] else 'All'}"
-    )
-
-def get_help_message():
-    return (
-        "📚 <b>CONFIGURATION GUIDE</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "<b>💸 Risk $</b>: Max dollar loss per trade.\n"
-        "<b>⚖️ RR</b>: Minimum Risk/Reward Ratio (e.g. 1.5).\n"
-        "<b>📊 ATR %</b>: Max volatility allowed.\n"
-        "<b>📈 SMA</b>: Trend filter (Price > SMA).\n"
-        "<b>✨ Only New</b>: \n✅ = Show only fresh signals from TODAY.\n❌ = Show ALL valid signals found.\n"
-        "<b>🔍 Manual Scan</b>: Send tickers comma separated (e.g. <code>AAPL, TSLA</code>) to see DIAGNOSIS."
-    )
+        [KeyboardButton("ℹ️ HELP / INFO")]
+    ], resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
     p = await safe_get_params(context)
-    context.user_data['scanning'] = False
-    context.user_data['input_mode'] = None
-    
-    welcome_txt = (
-        f"👋 <b>Welcome, {update.effective_user.first_name}!</b>\n\n"
-        f"💎 <b>Vova Screener Bot</b> is ready.\n"
-        f"Tap 'Start Scan' to begin or send tickers manually."
-    )
-    await update.message.reply_html(welcome_txt, reply_markup=get_reply_keyboard(p))
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    active = context.bot_data.get('active_users', set())
-    msg = f"📊 <b>ADMIN STATS</b>\nActive: {len(active)}\nLast Scan: {last_scan_time}"
-    await update.message.reply_html(msg)
+    await update.message.reply_html(f"👋 Welcome! Bot is ready.", reply_markup=get_reply_keyboard(p))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
-    
     text = update.message.text
     p = await safe_get_params(context)
     
     if text == "▶️ START SCAN":
-        if context.user_data.get('scanning'): 
-            await update.message.reply_text("⚠️ Scan already running!")
-            return
+        if context.user_data.get('scanning'): return await update.message.reply_text("⚠️ Already running!")
         context.user_data['scanning'] = True
         tickers = get_sp500_tickers()
-        asyncio.create_task(run_scan_process(update, context, p, tickers, manual_mode=False))
+        asyncio.create_task(run_scan_process(update, context, p, tickers))
         return
-
     elif text == "⏹ STOP SCAN":
         context.user_data['scanning'] = False
-        await update.message.reply_text("🛑 Stopping...")
-        return
-
+        return await update.message.reply_text("🛑 Stopping...")
     elif text == "ℹ️ HELP / INFO":
-        await update.message.reply_html(get_help_message())
-        return
-
-    elif "Daily" in text or "Weekly" in text:
-        p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
-    elif "Only New signals" in text:
-        p['new_only'] = not p['new_only']
-
+        return await update.message.reply_html("📚 <b>Commands:</b>\nSend tickers (e.g. <code>AAPL, TSLA</code>) for diagnosis.")
+    elif "Daily" in text or "Weekly" in text: p['tf'] = "Weekly" if p['tf'] == "Daily" else "Daily"
+    elif "Only New" in text: p['new_only'] = not p['new_only']
     elif "SMA:" in text:
         opts = [100, 150, 200]
-        try: 
-            current = int(text.split(":")[1].strip())
-            p['sma'] = opts[(opts.index(current) + 1) % 3]
+        try: p['sma'] = opts[(opts.index(int(text.split(":")[1].strip())) + 1) % 3]
         except: p['sma'] = 200
-
     elif "Risk:" in text:
-        context.user_data['input_mode'] = "risk_usd"
-        await update.message.reply_text("✏️ Enter Risk Amount in $ (e.g., 50):")
-        return
-    elif "RR:" in text:
-        context.user_data['input_mode'] = "min_rr"
-        await update.message.reply_text("✏️ Enter Min RR (e.g., 2.0):")
-        return
-    elif "ATR:" in text:
-        context.user_data['input_mode'] = "max_atr"
-        await update.message.reply_text("✏️ Enter Max ATR % (e.g., 5.0):")
-        return
-
-    elif context.user_data.get('input_mode'):
-        try:
-            val = float(text.replace(',', '.'))
-            mode = context.user_data['input_mode']
-            if mode == "risk_usd": p['risk_usd'] = max(1.0, val)
-            elif mode == "min_rr": p['min_rr'] = max(1.0, val)
-            elif mode == "max_atr": p['max_atr'] = val
-            context.user_data['input_mode'] = None
-            await update.message.reply_text("✅ Updated!")
-        except:
-            await update.message.reply_text("❌ Invalid number. Try again.")
-            return
-
+        context.user_data['input_mode'] = "risk"
+        return await update.message.reply_text("✏️ Enter Risk $:")
+    elif context.user_data.get('input_mode') == "risk":
+        try: p['risk_usd'] = max(1.0, float(text)); context.user_data['input_mode'] = None; await update.message.reply_text("✅ Updated")
+        except: pass
     elif "," in text or (text.isalpha() and len(text) < 6):
         ts = [x.strip().upper() for x in text.split(",") if x.strip()]
         if ts:
@@ -583,40 +438,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data['params'] = p
-    await update.message.reply_text(get_status_text("Ready", p), reply_markup=get_reply_keyboard(p), parse_mode='HTML')
+    await update.message.reply_text(f"Config: Risk ${p['risk_usd']} | {p['tf']}", reply_markup=get_reply_keyboard(p))
 
 # ==========================================
-# 7. MAIN (BACKGROUND RUN FIX)
+# 7. ARCHITECTURE: SINGLETON BOT (Fix for Conflict)
 # ==========================================
+
+# Use st.cache_resource to enforce only ONE bot instance per Streamlit container
+@st.cache_resource
+def get_bot_app():
+    """Create the Application ONCE and return it."""
+    my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
+    app = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    return app
+
+def run_bot_in_background(app):
+    """Run polling in a separate daemon thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        # Check if already running to double-prevent conflicts
+        if not app.updater or not app.updater.running:
+            app.run_polling(stop_signals=None, close_loop=False)
+    except Exception as e:
+        print(f"Bot thread error: {e}")
+
 if __name__ == '__main__':
     st.set_page_config(page_title="Vova Bot", page_icon="🤖")
-    st.title("💎 Vova Screener Bot")
+    st.title("💎 Vova Screener Bot (Singleton)")
     
+    # 1. Get the Singleton Bot Instance
+    bot_app = get_bot_app()
+    
+    # 2. Start Polling in a Thread (Non-blocking)
+    if "bot_thread_started" not in st.session_state:
+        # Create a thread that runs the asyncio loop for the bot
+        bot_thread = threading.Thread(target=run_bot_in_background, args=(bot_app,), daemon=True)
+        bot_thread.start()
+        st.session_state.bot_thread_started = True
+        print("✅ Bot polling thread started.")
+    
+    # 3. UI Display
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
-    market_open = is_market_open()
-    c1, c2 = st.columns(2)
-    with c1: st.metric("USA Market", "OPEN" if market_open else "CLOSED", delta=now_ny.strftime("%H:%M NY"))
-    with c2: st.metric("Bot Status", "Running")
-    
-    if "bot_active" not in st.session_state:
-        st.session_state.bot_active = True
-        
-        my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
-        application = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
-        
-        application.add_handler(CommandHandler('start', start))
-        application.add_handler(CommandHandler('stats', stats_command))
-        application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-        
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-        loop.create_task(application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False, stop_signals=None))
-        
-        print("✅ Бот запущен в фоне")
-    else:
-        st.info("Бот активен и работает в фоне.")
+    st.metric("USA Market Time", now_ny.strftime("%H:%M"))
+    st.success("Bot is running in background.")
