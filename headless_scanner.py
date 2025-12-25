@@ -134,9 +134,11 @@ def calc_atr(df, length):
     return tr.ewm(alpha=1/length, adjust=False).mean()
 
 # --- STRATEGY ---
+# --- STRATEGY ---
 def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     df['SMA'] = calc_sma(df['Close'], len_maj)
     adx, p_di, m_di = calc_adx_pine(df, adx_len)
+    
     ema_f = calc_ema(df['Close'], len_fast)
     ema_s = calc_ema(df['Close'], len_slow)
     hist = calc_macd(df['Close'])
@@ -145,31 +147,58 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     
     n = len(df)
     c_a, h_a, l_a = df['Close'].values, df['High'].values, df['Low'].values
+    
     seq_st = np.zeros(n, dtype=int)
     crit_lvl = np.full(n, np.nan)
     res_peak = np.full(n, np.nan)
     res_struct = np.zeros(n, dtype=bool)
     
-    s_state = 0; s_crit = np.nan; s_h = h_a[0]; s_l = l_a[0]
+    s_state = 0
+    s_crit = np.nan
+    s_h = h_a[0]; s_l = l_a[0]
+    
     last_pk = np.nan; last_tr = np.nan
     pk_hh = False; tr_hl = False
     
     for i in range(1, n):
         c, h, l = c_a[i], h_a[i], l_a[i]
-        prev_st = s_state; prev_cr = s_crit; prev_sh = s_h; prev_sl = s_l
+        
+        # Сохраняем состояние до изменений
+        prev_st = s_state
+        prev_cr = s_crit
+        prev_sh = s_h # Максимум ТЕКУЩЕГО тренда (до этой свечи)
+        prev_sl = s_l # Минимум ТЕКУЩЕГО тренда (до этой свечи)
+        
         brk = False
         if prev_st == 1 and not np.isnan(prev_cr): brk = c < prev_cr
         elif prev_st == -1 and not np.isnan(prev_cr): brk = c > prev_cr
             
         if brk:
-            if prev_st == 1:
-                is_hh = True if np.isnan(last_pk) else (prev_sh > last_pk)
-                pk_hh = is_hh; last_pk = prev_sh
-                s_state = -1; s_h = h; s_l = l; s_crit = h
-            else:
-                is_hl = True if np.isnan(last_tr) else (prev_sl > last_tr)
-                tr_hl = is_hl; last_tr = prev_sl
-                s_state = 1; s_h = h; s_l = l; s_crit = l
+            if prev_st == 1: # Был UP тренд, стал DOWN
+                # --- FIX START: REJECTION WICK LOGIC ---
+                # Если на свече пробоя цена успела сходить выше старого хая -> обновляем хай
+                final_high = max(prev_sh, h)
+                # ---------------------------------------
+                
+                is_hh = True if np.isnan(last_pk) else (final_high > last_pk)
+                pk_hh = is_hh
+                last_pk = final_high # Сохраняем правильный пик (182.53)
+                
+                s_state = -1
+                s_h = h; s_l = l
+                s_crit = h
+            else: # Был DOWN тренд, стал UP
+                # --- FIX START: REJECTION WICK LOGIC ---
+                final_low = min(prev_sl, l)
+                # ---------------------------------------
+                
+                is_hl = True if np.isnan(last_tr) else (final_low > last_tr)
+                tr_hl = is_hl
+                last_tr = final_low
+                
+                s_state = 1
+                s_h = h; s_l = l
+                s_crit = l
         else:
             s_state = prev_st
             if s_state == 1:
@@ -181,9 +210,12 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
                 if l <= prev_sl: s_crit = h
                 else: s_crit = prev_cr
             else:
-                if c > prev_sh: s_state = 1; s_crit = l
-                elif c < prev_sl: s_state = -1; s_crit = h
-                else: s_h = max(prev_sh, h); s_l = min(prev_sl, l)
+                if c > prev_sh: 
+                    s_state = 1; s_crit = l
+                elif c < prev_sl: 
+                    s_state = -1; s_crit = h
+                else:
+                    s_h = max(prev_sh, h); s_l = min(prev_sl, l)
         
         seq_st[i] = s_state
         crit_lvl[i] = s_crit
@@ -198,7 +230,7 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     
     df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak; df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
     return df
-
+    
 def analyze_trade(df, idx):
     r = df.iloc[idx]
     price = r['Close']; tp = r['Peak']; crit = r['Crit']; atr = r['ATR']
@@ -599,3 +631,4 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
