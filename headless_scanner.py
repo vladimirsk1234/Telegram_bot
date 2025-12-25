@@ -51,14 +51,8 @@ try:
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
     GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "").strip()
     print(f"✅ Loaded Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID}")
-except FileNotFoundError:
-    st.error("❌ `secrets.toml` file not found! Please create `.streamlit/secrets.toml`.")
-    st.stop()
-except KeyError as e:
-    st.error(f"❌ Missing key in secrets file: {e}. Check your variable names.")
-    st.stop()
 except Exception as e:
-    st.error(f"❌ Error loading secrets: {e}")
+    st.error(f"❌ Secret Error: {e}")
     st.stop()
 
 # 2. GLOBAL SETTINGS
@@ -222,56 +216,42 @@ def analyze_trade(df, idx):
     
     risk = price - final_sl
     reward = tp - price
-    if risk <= 0: errs.append("BAD STOP")
-    if reward <= 0: errs.append("AT TARGET")
     
+    # We allow risk<=0 here just to pass data to UI, UI handles the error display
     rr = reward / risk if risk > 0 else 0
+    
     data = {"P": price, "TP": tp, "SL": final_sl, "RR": rr, "ATR": atr, "Crit": crit,
             "Seq": r['Seq'], "Trend": r['Trend'], "SMA": sma, "Struct": r['Struct'], "Close": price}
+    
     valid = len(errs) == 0
     return valid, data, errs
 
 # ==========================================
-# 4. UI: DASHBOARD STYLE
+# 4. UI: DASHBOARD STYLE (PREMIUM)
 # ==========================================
 def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
-    # 1. ПОДГОТОВКА ДАННЫХ
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
-    # Финансы (безопасное получение)
-    # Используем .get(), чтобы избежать ошибок, если данных нет
     pe_str = str(info.get('pe', 'N/A'))
     mc_str = str(info.get('mc', 'N/A'))
-
-    # ATR Визуал
     atr_pct = (d['ATR'] / d['Close']) * 100
     
-    # Логика светофоров (Emojis)
     trend_emo = "🟢" if d['Trend'] == 1 else ("🔴" if d['Trend'] == -1 else "🟡")
     seq_emo = "🟢" if d['Seq'] == 1 else ("🔴" if d['Seq'] == -1 else "🟡")
     ma_emo = "🟢" if d['Close'] > d['SMA'] else "🔴"
     
-    # 2. ПРОВЕРКА ЛОГИКИ (Как в старом коде + новые проверки)
     cond_seq = d['Seq'] == 1
     cond_ma = d['Close'] > d['SMA']
     cond_trend = d['Trend'] != -1
-    # Используем .get() для совместимости, если ключа нет
-    cond_struct = d.get('Struct', False) 
+    cond_struct = d.get('Struct', False)
     
-    # Основная валидация структуры
     is_valid_setup = cond_seq and cond_ma and cond_trend and cond_struct
-    
-    # Математическая валидация (Риск и Прибыль должны быть > 0)
     risk = d['P'] - d['SL']
     reward = d['TP'] - d['P']
     is_valid_math = risk > 0 and reward > 0
 
-    # 3. СБОРКА HTML (PREMIUM FORMAT)
-    # Заголовок (общий для всех карточек)
     header = f"<b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
-    
-    # Блок контекста (Финансы + Индикаторы)
     context_block = (
         f"MC: {mc_str} | P/E: {pe_str}\n"
         f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
@@ -279,14 +259,10 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
     )
 
     if is_valid_setup and is_valid_math:
-        # --- КАРТОЧКА АКТИВНОГО СИГНАЛА ---
         status_icon = "🆕" if is_new else "♻️"
-        
         profit = reward * shares
         loss = risk * shares
         rr_str = f"{d['RR']:.2f}"
-        
-        # Расчет общей суммы сделки (Цена * Кол-во акций)
         total_val = shares * d['P']
 
         html = (
@@ -298,30 +274,19 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
             f"⚖️ Risk/Reward: {rr_str}"
         )
     else:
-        # --- КАРТОЧКА ОШИБКИ / ОТЛАДКИ ---
         reasons = []
-        
-        # Структурные ошибки
         if not cond_seq: reasons.append("Seq❌")
         if not cond_ma: reasons.append("MA❌")
         if not cond_trend: reasons.append("Trend❌")
         if not cond_struct: reasons.append("Struct❌")
-        
-        # Математические ошибки (добавлено по запросу)
-        if risk <= 0:
-            reasons.append("RR NEGATIVE❌")
-        elif reward <= 0:
-            reasons.append("ABOVE HH ❌")
+        if risk <= 0: reasons.append("❌RR NEGATIVE")
+        elif reward <= 0: reasons.append("❌ABOVE HH")
 
         fail_str = " ".join(reasons) if reasons else "UNKNOWN ERROR"
-
-        html = (
-            f"⛔ {header}"
-            f"{context_block}"
-            f"<b>NO SETUP:</b> {fail_str}"
-        )
+        html = f"⛔ {header}{context_block}<b>NO SETUP:</b> {fail_str}"
     
     return html
+
 # ==========================================
 # 5. SCANNING PROCESS
 # ==========================================
@@ -342,6 +307,7 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
                 await status_msg.edit_text(f"<b>SCAN:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n<i>{t}</i>", parse_mode='HTML')
             except: pass
         if i % 50 == 0: gc.collect()
+        
         try:
             await asyncio.sleep(0.01)
             inter = "1d" if p['tf'] == "Daily" else "1wk"
@@ -350,17 +316,22 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
             if len(df) < p['sma'] + 5:
                 if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t}</b>: Not enough data", parse_mode='HTML')
                 continue
+            
             df = run_vova_logic(df, p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
             valid, d, errs = analyze_trade(df, -1)
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
+            
             show_card = False
             if manual_mode: show_card = True
             elif valid:
                 if p['new_only'] and not is_new: show_card = False
                 elif d['RR'] >= p['min_rr'] and (d['ATR']/d['P'])*100 <= p['max_atr']:
-                    shares = int(p['risk_usd'] / (d['P'] - d['SL']))
-                    if shares >= 1: show_card = True
+                    risk_per_share = d['P'] - d['SL']
+                    if risk_per_share > 0:
+                        shares = int(p['risk_usd'] / risk_per_share)
+                        if shares >= 1: show_card = True
+            
             if show_card:
                 info = get_extended_info(t)
                 risk_per_share = d['P'] - d['SL']
@@ -371,6 +342,7 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
         except Exception as e:
             if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t} Error:</b> {str(e)}", parse_mode='HTML')
             continue
+            
     await context.bot.send_message(chat_id=chat_id, text=f"🏁 <b>SCAN COMPLETE</b>\n✅ Found: {results_found}", parse_mode='HTML')
     context.user_data['scanning'] = False
 
@@ -379,13 +351,14 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
 # ==========================================
 def get_allowed_users():
     allowed = {ADMIN_ID}
-    if not GITHUB_USERS_URL: return allowed
-    try:
-        response = requests.get(GITHUB_USERS_URL, timeout=5)
-        if response.status_code == 200:
-            for line in response.text.splitlines():
-                if line.strip().isdigit(): allowed.add(int(line.strip()))
-    except: pass
+    if GITHUB_USERS_URL:
+        try:
+            response = requests.get(GITHUB_USERS_URL, timeout=3)
+            if response.status_code == 200:
+                for line in response.text.splitlines():
+                    clean = line.split('#')[0].strip()
+                    if clean.isdigit(): allowed.add(int(clean))
+        except Exception as e: print(f"⚠️ Error fetching whitelist: {e}")
     return allowed
 
 async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -394,19 +367,21 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: await update.message.reply_html("⛔ <b>Access Denied</b>")
         except: pass
         return False
+    if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
+    context.bot_data['active_users'].add(user_id)
     return True
 
 async def safe_get_params(context):
     if 'params' not in context.user_data: context.user_data['params'] = DEFAULT_PARAMS.copy()
     return context.user_data['params']
 
-# MAIN KEYBOARD
+# --- KEYBOARDS ---
 def get_main_keyboard(p):
     risk = f"💸 Risk: ${p['risk_usd']:.0f}"
     rr = f"⚖️ RR: {p['min_rr']}"
     atr = f"📊 ATR Max: {p['max_atr']}%"
     sma = f"📈 SMA: {p['sma']}"
-    tf = f"⏳ TIMEFRAME: {p['tf'][0]}" # D or W
+    tf = f"⏳ TIMEFRAME: {p['tf'][0]}"
     new = f"Only New {'✅' if p['new_only'] else '❌'}"
     return ReplyKeyboardMarkup([
         [KeyboardButton(risk), KeyboardButton(rr)],
@@ -416,39 +391,76 @@ def get_main_keyboard(p):
         [KeyboardButton("ℹ️ HELP / INFO")]
     ], resize_keyboard=True)
 
-# SMA SELECTION KEYBOARD
 def get_sma_keyboard():
-    return ReplyKeyboardMarkup([
-        [KeyboardButton("SMA 100"), KeyboardButton("SMA 150"), KeyboardButton("SMA 200")],
-        [KeyboardButton("🔙 Back")]
-    ], resize_keyboard=True)
+    return ReplyKeyboardMarkup([[KeyboardButton("SMA 100"), KeyboardButton("SMA 150"), KeyboardButton("SMA 200")], [KeyboardButton("🔙 Back")]], resize_keyboard=True)
 
-# TIMEFRAME SELECTION KEYBOARD
 def get_tf_keyboard():
-    return ReplyKeyboardMarkup([
-        [KeyboardButton("Daily (D)"), KeyboardButton("Weekly (W)")],
-        [KeyboardButton("🔙 Back")]
-    ], resize_keyboard=True)
+    return ReplyKeyboardMarkup([[KeyboardButton("Daily (D)"), KeyboardButton("Weekly (W)")], [KeyboardButton("🔙 Back")]], resize_keyboard=True)
 
+# --- COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
-    p = await safe_get_params(context)
-    # Reset input mode on start
+    
+    # Parameter Safety Check
+    try:
+        p = await safe_get_params(context)
+        if 'sma' not in p: p = DEFAULT_PARAMS.copy()
+    except:
+        p = DEFAULT_PARAMS.copy()
+        context.user_data['params'] = p
+
     context.user_data['input_mode'] = None
-    await update.message.reply_html(f"👋 Welcome! Bot is ready.", reply_markup=get_main_keyboard(p))
+    
+    # Deep Linking Logic
+    if context.args and context.args[0] == 'autoscan':
+        await update.message.reply_text("🚀 <b>Auto-starting Scan...</b>", parse_mode='HTML')
+        context.user_data['scanning'] = True
+        tickers = get_sp500_tickers()
+        asyncio.create_task(run_scan_process(update, context, p, tickers, manual_mode=False))
+        return
+
+    # Detailed Welcome
+    user_name = update.effective_user.first_name
+    adx_val = globals().get('ADX_T', 20)
+    
+    welcome_text = f"""👋 <b>Welcome, {user_name}!</b>
+
+🤖 <b>I am the Vova Sequence Screener.</b>
+I automate the analysis of S&P 500 stocks using a strict quantitative strategy based on Market Structure and Momentum.
+
+<b>🧩 STRATEGY LOGIC:</b>
+<b>1. Macro Trend:</b> I only look for Longs when price is ABOVE the <b>SMA {p['sma']}</b>.
+<b>2. Momentum:</b> I use the <b>Elder Impulse System</b> (EMA + MACD) to confirm Bullish momentum (Green Bars).
+<b>3. Trend Strength:</b> <b>ADX</b> must be > {adx_val} to ensure the trend is strong enough.
+<b>4. Structure Shift:</b> I identify a valid Break of Structure (New Higher High after a Higher Low) to trigger a signal.
+
+<b>🛡️ RISK MANAGEMENT:</b>
+• <b>ATR Filter:</b> I reject stocks with dangerous volatility (> {p['max_atr']}%).
+• <b>R/R Ratio:</b> I calculate the Risk/Reward based on the structural Stop Loss. Trades below <b>{p['min_rr']}R</b> are skipped.
+• <b>Position Sizing:</b> I calculate exactly how many shares to buy based on your <b>${p['risk_usd']}</b> risk setting.
+
+<i>👇 Use the menu below to configure parameters and Start Scan.</i>"""
+
+    await update.message.reply_html(welcome_text, reply_markup=get_main_keyboard(p))
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    allowed = get_allowed_users()
+    active = context.bot_data.get('active_users', set())
+    msg = (f"📊 <b>BOT STATISTICS</b>\n━━━━━━━━━━━━━━━━━━\n"
+           f"✅ <b>Approved:</b> {len(allowed)}\n<code>{', '.join(map(str, allowed))}</code>\n\n"
+           f"👥 <b>Active:</b> {len(active)}\n<code>{', '.join(map(str, active))}</code>")
+    await update.message.reply_html(msg)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
     text = update.message.text
     p = await safe_get_params(context)
     
-    # --- NAVIGATION & MODES ---
     if text == "🔙 Back":
         context.user_data['input_mode'] = None
         await update.message.reply_text("🔙 Main Menu", reply_markup=get_main_keyboard(p))
         return
-
-    # --- ACTION BUTTONS ---
     if text == "▶️ START SCAN":
         if context.user_data.get('scanning'): return await update.message.reply_text("⚠️ Already running!")
         context.user_data['scanning'] = True
@@ -458,7 +470,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "⏹ STOP SCAN":
         context.user_data['scanning'] = False
         return await update.message.reply_text("🛑 Stopping...")
-    
     elif text == "ℹ️ HELP / INFO":
         help_text = (
             "<b>📚 TECHNICAL MANUAL</b>\n\n"
@@ -466,20 +477,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>⚖️ RR (Risk/Reward):</b> Minimum Ratio required. Formula: <code>(TP - Entry) / (Entry - SL)</code>. Scan ignores trades below this.\n\n"
             "<b>📊 ATR Max:</b> Volatility filter. If <code>(ATR / Price) * 100</code> > Max %, trade is skipped (too volatile).\n\n"
             "<b>📈 SMA:</b> Trend Filter. Trade must be ABOVE this SMA to be valid (Long only).\n\n"
-            "<b>⏳ TIMEFRAME:</b>\n"
-            "• <b>Daily (D):</b> 2 years history, 1-day candles.\n"
-            "• <b>Weekly (W):</b> 5 years history, 1-week candles.\n\n"
-            "<b>Only New:</b>\n"
-            "✅ = Signal appeared on the LAST closed bar only.\n"
-            "❌ = Shows all valid active trends.\n\n"
-            "<b>🔍 Manual Scan:</b>\n"
-            "Type tickers separated by commas (e.g. <code>AAPL, TSLA, NVDA</code>) in the message window to scan/diagnose them immediately.\n\n"
-            "<b>Scanning:</b>\n"
-            "Changing parameters <b>during</b> a scan will apply to <i>remaining</i> tickers immediately."
+            "<b>⏳ TIMEFRAME:</b>\n• <b>Daily (D):</b> 2 years history.\n• <b>Weekly (W):</b> 5 years history.\n\n"
+            "<b>Only New:</b>\n✅ = Signal appeared on the LAST closed bar only.\n❌ = Shows all valid active trends.\n\n"
+            "<b>🔍 Manual Scan:</b>\nType tickers separated by commas (e.g. <code>AAPL, TSLA</code>) to scan them immediately.\n\n"
+            "<b>Scanning:</b>\nChanging parameters <b>during</b> a scan will apply to <i>remaining</i> tickers immediately."
         )
         return await update.message.reply_html(help_text)
-
-    # --- PARAMETER SELECTION MENUS ---
+    
     elif "SMA:" in text:
         context.user_data['input_mode'] = "sma_select"
         await update.message.reply_text("Select SMA Length:", reply_markup=get_sma_keyboard())
@@ -489,36 +493,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Select Timeframe:", reply_markup=get_tf_keyboard())
         return
 
-    # --- SMA SELECTION LOGIC ---
     if context.user_data.get('input_mode') == "sma_select":
         if text in ["SMA 100", "SMA 150", "SMA 200"]:
-            val = int(text.split()[1])
-            p['sma'] = val
+            p['sma'] = int(text.split()[1])
             context.user_data['input_mode'] = None
-            await update.message.reply_text(f"✅ SMA set to {val}", reply_markup=get_main_keyboard(p))
+            await update.message.reply_text(f"✅ SMA set to {p['sma']}", reply_markup=get_main_keyboard(p))
         return
-
-    # --- TIMEFRAME SELECTION LOGIC ---
     if context.user_data.get('input_mode') == "tf_select":
-        if "Daily" in text:
-            p['tf'] = "Daily"
-            context.user_data['input_mode'] = None
-            await update.message.reply_text("✅ Timeframe set to D (Daily)", reply_markup=get_main_keyboard(p))
-        elif "Weekly" in text:
-            p['tf'] = "Weekly"
-            context.user_data['input_mode'] = None
-            await update.message.reply_text("✅ Timeframe set to W (Weekly)", reply_markup=get_main_keyboard(p))
+        if "Daily" in text: p['tf'] = "Daily"
+        elif "Weekly" in text: p['tf'] = "Weekly"
+        context.user_data['input_mode'] = None
+        await update.message.reply_text(f"✅ Timeframe set to {p['tf']}", reply_markup=get_main_keyboard(p))
         return
 
-    # --- TOGGLES ---
-    elif "Only New" in text: 
+    if "Only New" in text: 
         p['new_only'] = not p['new_only']
         status = "ENABLED" if p['new_only'] else "DISABLED"
         await update.message.reply_text(f"✅ Only New Signals: {status}", reply_markup=get_main_keyboard(p))
         return
 
-    # --- NUMERIC INPUT TRIGGERS ---
-    elif "Risk:" in text:
+    if "Risk:" in text:
         context.user_data['input_mode'] = "risk"
         return await update.message.reply_text("✏️ Enter Risk Amount ($):")
     elif "RR:" in text:
@@ -528,9 +522,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['input_mode'] = "atr"
         return await update.message.reply_text("✏️ Enter Max ATR % (e.g. 5.0):")
 
-    # --- NUMERIC INPUT HANDLING ---
     mode = context.user_data.get('input_mode')
-    
     if mode == "risk":
         try: 
             val = float(text)
@@ -538,9 +530,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['risk_usd'] = val
             context.user_data['input_mode'] = None
             await update.message.reply_text(f"✅ Risk updated to ${val}", reply_markup=get_main_keyboard(p))
-        except: await update.message.reply_text("❌ Invalid amount. Enter a number > 1.")
+        except: await update.message.reply_text("❌ Invalid amount.")
         return
-
     elif mode == "rr":
         try:
             val = float(text)
@@ -548,21 +539,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['min_rr'] = val
             context.user_data['input_mode'] = None
             await update.message.reply_text(f"✅ Min RR updated to {val}", reply_markup=get_main_keyboard(p))
-        except: await update.message.reply_text("❌ Invalid number. Enter e.g. 1.5")
+        except: await update.message.reply_text("❌ Invalid number.")
         return
-
     elif mode == "atr":
         try:
             val = float(text)
-            if val < 0.1 or val > 50: raise ValueError
+            if val < 0.1: raise ValueError
             p['max_atr'] = val
             context.user_data['input_mode'] = None
             await update.message.reply_text(f"✅ Max ATR updated to {val}%", reply_markup=get_main_keyboard(p))
-        except: await update.message.reply_text("❌ Invalid number. Enter e.g. 5.0")
+        except: await update.message.reply_text("❌ Invalid number.")
         return
 
-    # --- MANUAL TICKER ENTRY ---
-    elif "," in text or (text.isalpha() and len(text) < 6):
+    if "," in text or (text.isalpha() and len(text) < 6):
         ts = [x.strip().upper() for x in text.split(",") if x.strip()]
         if ts:
             context.user_data['scanning'] = True
@@ -570,19 +559,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await run_scan_process(update, context, p, ts, manual_mode=True)
         return
 
-    # Fallback refresh
     context.user_data['params'] = p
     await update.message.reply_text(f"Config: Risk ${p['risk_usd']} | {p['tf']}", reply_markup=get_main_keyboard(p))
 
 # ==========================================
 # 7. ARCHITECTURE: SINGLETON BOT
 # ==========================================
-
 @st.cache_resource
 def get_bot_app():
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     app = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('stats', stats_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     return app
 
@@ -611,8 +599,3 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
-
-
-
-
-
