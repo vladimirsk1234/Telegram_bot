@@ -287,7 +287,7 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
 
         html = (
             f"{status_icon} {header}"
-            f"Size: {shares} shares\n"
+            f"Size: {shares} shares (${total_val:,.0f})\n"
             f"{context_block}"
             f"🛑 SL: {d['SL']:.2f}  (-${loss:.0f})\n"
             f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
@@ -607,5 +607,6 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
 
 
