@@ -1,39 +1,3 @@
-Gemini
-
-Telegram Bot from Web Screener
-
-New chat
-My Stuff
-Gems
-
-Brainstormer
-Chats
-Telegram Bot from Web Screener
-Deploying Streamlit App on GitHub
-Streamlit Telegram Bot Integration
-
-Settings & help
-Conversation with Gemini
-DOES IT HAVE LOGIC IN CODE IF I WANT TO SCAN MANUALY NEW TRADES FROM TODAY HE WILL SHOW ME EVEN HE ALREADY SHOWED WHEN AUTOMATCLY SCANNED? IF NO ADD THIS LOGIC THAT WHEN SCAN MANUALY NEED TO SHOW ALL NEW OR ALL AVAILBLE TRADES DEPENDS ON SWITCH...AND LOGIC NOT TO REPEAT NEW SIGNALS VALID ONLY TO AUTOSCAN IN CURRENT TRADING DAY. DO YOU UNDERSTAND?
-
-Вы абсолютно правы. В текущей логике ручной скан мог пропустить тикер, если он уже попал в список sent_today из-за автоскана.
-
-Я исправил это.
-
-🛠 Что изменено в логике (V 2.0):
-Разделение логики:
-
-AUTOSCAN: Строго проверяет список sent_today. Если тикер уже был показан сегодня — пропускает.
-
-MANUAL SCAN: Полностью ИГНОРИРУЕТ список sent_today.
-
-Если включено "Only New": покажет сигнал, даже если автоскан уже присылал его утром (вы увидите его снова, как и просили).
-
-Если выключено "Only New": покажет вообще все активные сделки.
-
-Замените файл headless_scanner.py целиком. Это финальная, отшлифованная версия.
-
-Python
 import logging
 import asyncio
 import datetime
@@ -35936,4 +35900,5 @@ if __name__ == '__main__':
 
 
 Gemini can make mistakes, so double-check it
+
 
