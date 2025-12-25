@@ -134,7 +134,6 @@ def calc_atr(df, length):
     return tr.ewm(alpha=1/length, adjust=False).mean()
 
 # --- STRATEGY ---
-# --- STRATEGY ---
 def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     df['SMA'] = calc_sma(df['Close'], len_maj)
     adx, p_di, m_di = calc_adx_pine(df, adx_len)
@@ -163,35 +162,29 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     for i in range(1, n):
         c, h, l = c_a[i], h_a[i], l_a[i]
         
-        # Сохраняем состояние до изменений
         prev_st = s_state
         prev_cr = s_crit
-        prev_sh = s_h # Максимум ТЕКУЩЕГО тренда (до этой свечи)
-        prev_sl = s_l # Минимум ТЕКУЩЕГО тренда (до этой свечи)
+        prev_sh = s_h 
+        prev_sl = s_l 
         
         brk = False
         if prev_st == 1 and not np.isnan(prev_cr): brk = c < prev_cr
         elif prev_st == -1 and not np.isnan(prev_cr): brk = c > prev_cr
             
         if brk:
-            if prev_st == 1: # Был UP тренд, стал DOWN
-                # --- FIX START: REJECTION WICK LOGIC ---
-                # Если на свече пробоя цена успела сходить выше старого хая -> обновляем хай
+            if prev_st == 1: 
+                # --- WICK FIX ---
                 final_high = max(prev_sh, h)
-                # ---------------------------------------
-                
                 is_hh = True if np.isnan(last_pk) else (final_high > last_pk)
                 pk_hh = is_hh
-                last_pk = final_high # Сохраняем правильный пик (182.53)
+                last_pk = final_high 
                 
                 s_state = -1
                 s_h = h; s_l = l
                 s_crit = h
-            else: # Был DOWN тренд, стал UP
-                # --- FIX START: REJECTION WICK LOGIC ---
+            else: 
+                # --- WICK FIX ---
                 final_low = min(prev_sl, l)
-                # ---------------------------------------
-                
                 is_hl = True if np.isnan(last_tr) else (final_low > last_tr)
                 tr_hl = is_hl
                 last_tr = final_low
@@ -230,7 +223,7 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     
     df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak; df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
     return df
-    
+
 def analyze_trade(df, idx):
     r = df.iloc[idx]
     price = r['Close']; tp = r['Peak']; crit = r['Crit']; atr = r['ATR']
@@ -249,7 +242,6 @@ def analyze_trade(df, idx):
     risk = price - final_sl
     reward = tp - price
     
-    # We allow risk<=0 here just to pass data to UI, UI handles the error display
     rr = reward / risk if risk > 0 else 0
     
     data = {"P": price, "TP": tp, "SL": final_sl, "RR": rr, "ATR": atr, "Crit": crit,
@@ -259,9 +251,9 @@ def analyze_trade(df, idx):
     return valid, data, errs
 
 # ==========================================
-# 4. UI: DASHBOARD STYLE (PREMIUM)
+# 4. UI: DASHBOARD STYLE (PREMIUM + DYNAMIC SMA)
 # ==========================================
-def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
+def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
@@ -284,10 +276,12 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
     is_valid_math = risk > 0 and reward > 0
 
     header = f"<b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
+    
+    # SHOW DYNAMIC SMA LENGTH (e.g. MA200)
     context_block = (
         f"MC: {mc_str} | P/E: {pe_str}\n"
         f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
-        f"Trend {trend_emo}  Seq {seq_emo}  MA {ma_emo}\n"
+        f"Trend {trend_emo}  Seq {seq_emo}  MA{sma_len} ${d['SMA']:.2f} {ma_emo}\n"
     )
 
     if is_valid_setup and is_valid_math:
@@ -320,11 +314,24 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
     return html
 
 # ==========================================
-# 5. SCANNING PROCESS
+# 5. SCANNING PROCESS (WITH CONFIG BAR)
 # ==========================================
 async def run_scan_process(update, context, p, tickers, manual_mode=False):
     chat_id = update.effective_chat.id
-    status_msg = await context.bot.send_message(chat_id=chat_id, text=f"🔎 <b>Scanning {len(tickers)} tickers...</b>", parse_mode='HTML')
+    
+    # VISUAL CONFIGURATION
+    config_display = (
+        f"⚙️ <b>Active Settings:</b>\n"
+        f"Risk ${p['risk_usd']:.0f} | RR {p['min_rr']} | SMA {p['sma']} | ATR {p['max_atr']}%\n"
+        f"TF: {p['tf']} | New Only: {'✅' if p['new_only'] else '❌'}"
+    )
+
+    status_msg = await context.bot.send_message(
+        chat_id=chat_id, 
+        text=f"🔎 <b>Scanning {len(tickers)} tickers...</b>\n\n{config_display}", 
+        parse_mode='HTML'
+    )
+    
     results_found = 0
     total = len(tickers)
     
@@ -332,19 +339,31 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
         if not context.user_data.get('scanning', False):
             await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
+            
         if i % 10 == 0 or i == total - 1:
             try:
                 pct = int((i + 1) / total * 10)
                 bar = "█" * pct + "░" * (10 - pct)
-                await status_msg.edit_text(f"<b>SCAN:</b> {i+1}/{total}\n[{bar}] {int((i+1)/total*100)}%\n<i>{t}</i>", parse_mode='HTML')
+                percent_num = int((i+1)/total*100)
+                
+                await status_msg.edit_text(
+                    f"<b>SCAN:</b> {i+1}/{total} ({percent_num}%)\n"
+                    f"[{bar}]\n"
+                    f"👉 <i>Checking: {t}</i>\n\n"
+                    f"{config_display}", 
+                    parse_mode='HTML'
+                )
             except: pass
+            
         if i % 50 == 0: gc.collect()
         
         try:
             await asyncio.sleep(0.01)
             inter = "1d" if p['tf'] == "Daily" else "1wk"
             fetch_period = "2y" if p['tf'] == "Daily" else "5y"
+            
             df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
+            
             if len(df) < p['sma'] + 5:
                 if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t}</b>: Not enough data", parse_mode='HTML')
                 continue
@@ -368,9 +387,13 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
                 info = get_extended_info(t)
                 risk_per_share = d['P'] - d['SL']
                 shares = int(p['risk_usd'] / risk_per_share) if risk_per_share > 0 else 0
-                card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'])
+                
+                # PASSING SMA LENGTH HERE
+                card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'], p['sma'])
+                
                 await context.bot.send_message(chat_id=chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
                 results_found += 1
+                
         except Exception as e:
             if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t} Error:</b> {str(e)}", parse_mode='HTML')
             continue
@@ -395,11 +418,8 @@ def get_allowed_users():
 
 async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    # 1. Проверка доступа
     if user_id not in get_allowed_users(): 
         try: 
-            # Сообщение для неавторизованных пользователей
             msg = (
                 f"🛑 <b>Authorization Required</b>\n\n"
                 f"👋 <b>Welcome!</b> This is a private quantitative scanner.\n"
@@ -412,11 +432,8 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
         return False
     
-    # 2. Логирование активных пользователей (для /stats)
-    if 'active_users' not in context.bot_data:
-        context.bot_data['active_users'] = set()
+    if 'active_users' not in context.bot_data: context.bot_data['active_users'] = set()
     context.bot_data['active_users'].add(user_id)
-    
     return True
 
 async def safe_get_params(context):
@@ -448,8 +465,6 @@ def get_tf_keyboard():
 # --- COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
-    
-    # Parameter Safety Check
     try:
         p = await safe_get_params(context)
         if 'sma' not in p: p = DEFAULT_PARAMS.copy()
@@ -459,7 +474,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['input_mode'] = None
     
-    # Deep Linking Logic
     if context.args and context.args[0] == 'autoscan':
         await update.message.reply_text("🚀 <b>Auto-starting Scan...</b>", parse_mode='HTML')
         context.user_data['scanning'] = True
@@ -467,7 +481,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(run_scan_process(update, context, p, tickers, manual_mode=False))
         return
 
-    # Detailed Welcome
     user_name = update.effective_user.first_name
     adx_val = globals().get('ADX_T', 20)
     
@@ -647,5 +660,3 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
-
-
