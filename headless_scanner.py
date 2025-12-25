@@ -235,47 +235,45 @@ def analyze_trade(df, idx):
 # 4. UI: DASHBOARD STYLE
 # ==========================================
 def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
+    # 1. DATA PREPARATION (Visuals only, no logic changes)
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
+    
+    # ATR Visuals
     atr_pct = (d['ATR'] / d['Close']) * 100
-    atr_emo = "🟢"
-    if atr_pct > 5.0: atr_emo = "🔴"
-    elif atr_pct >= 3.0: atr_emo = "🟡"
+    
+    # Lights Logic (Mapped to Emojis)
     trend_emo = "🟢" if d['Trend'] == 1 else ("🔴" if d['Trend'] == -1 else "🟡")
     seq_emo = "🟢" if d['Seq'] == 1 else ("🔴" if d['Seq'] == -1 else "🟡")
     ma_emo = "🟢" if d['Close'] > d['SMA'] else "🔴"
-    cond_seq = d['Seq'] == 1
-    cond_ma = d['Close'] > d['SMA']
-    cond_trend = d['Trend'] != -1
-    cond_struct = d['Struct']
-    is_valid = cond_seq and cond_ma and cond_trend and cond_struct
-
-    html = f"🖥 <b><a href='{tv_link}'>{ticker}</a></b>\n"
-    html += f"PE: {info['pe']} | MC: {info['mc']}\n"
-    html += f"ATR: {d['ATR']:.4f} ({atr_pct:.2f}%) {atr_emo}\n"
-    html += f"Trend {trend_emo}  Seq {seq_emo}  MA 200 {ma_emo}\n"
-    html += "━━━━━━━━━━━━━━━━━━\n"
     
-    if is_valid:
-        val_pos = shares * d['P']
-        profit = (d['TP'] - d['P']) * shares
-        loss = (d['P'] - d['SL']) * shares
-        status = "🆕 NEW" if is_new else "♻️ ACTIVE"
-        html += f"{status}\n"
-        html += f"💵 <b>${d['P']:.2f}</b>\n"
-        html += f"🛑 <b>SL</b>:  <code>{d['SL']:.2f}</code> (<code>-${abs(loss):.0f}</code>)\n"
-        html += f"🎯 <b>TP</b>:  <code>{d['TP']:.2f}</code> (<code>+${profit:.0f}</code>)\n"
-        html += f"⚖️ <b>RR</b>: <code>{d['RR']:.2f}</code> | Size: <code>{shares}</code>\n"
-    else:
-        reasons = []
-        if not cond_seq: reasons.append("Seq❌")
-        if not cond_ma: reasons.append("MA❌")
-        if not cond_trend: reasons.append("Trend❌")
-        if not cond_struct: reasons.append("Struct❌")
-        fail_str = " ".join(reasons) if reasons else "RISK/DATA❌"
-        html += f"<b>NO SETUP:</b> {fail_str}"
-    return html
+    # Header Status
+    status_icon = "🆕" if is_new else "♻️"
 
+    # Financials (Ensure string format)
+    pe_str = str(info.get('pe', 'N/A'))
+    mc_str = str(info.get('mc', 'N/A'))
+
+    # Trade Math (For display only)
+    profit = (d['TP'] - d['P']) * shares
+    loss = (d['P'] - d['SL']) * shares # Result is negative
+    
+    # RR Logic (Show ❌ if invalid/negative)
+    rr_str = f"{d['RR']:.2f}" if d['RR'] > 0 else "❌"
+
+    # 2. HTML CONSTRUCTION (Strict Layout Rules)
+    html = (
+        f"{status_icon} <b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
+        f"Size: {shares} shares\n"
+        f"MC: {mc_str} | P/E: {pe_str}\n"
+        f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
+        f"Trend {trend_emo}  Seq {seq_emo}  MA200 {ma_emo}\n"
+        f"🛑 SL: {d['SL']:.2f}  (-${abs(loss):.0f})\n"
+        f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
+        f"⚖️ Risk/Reward: {rr_str}"
+    )
+    
+    return html
 # ==========================================
 # 5. SCANNING PROCESS
 # ==========================================
@@ -563,3 +561,4 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
