@@ -309,9 +309,9 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
         
         # Математические ошибки (добавлено по запросу)
         if risk <= 0:
-            reasons.append("❌RR NEGATIVE")
+            reasons.append("RR NEGATIVE❌")
         elif reward <= 0:
-            reasons.append("❌ABOVE HH")
+            reasons.append("ABOVE HH ❌")
 
         fail_str = " ".join(reasons) if reasons else "UNKNOWN ERROR"
 
@@ -609,6 +609,7 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
 
 
 
