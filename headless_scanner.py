@@ -261,7 +261,7 @@ def analyze_trade(df, idx):
 # ==========================================
 # 4. UI: DASHBOARD STYLE (PREMIUM)
 # ==========================================
-def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
+def format_dashboard_card(ticker, d, shares, is_new, info, p_risk,sma_len):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
@@ -684,6 +684,7 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
 
 
 
