@@ -17,8 +17,14 @@ try:
     TG_TOKEN = st.secrets["TG_TOKEN"].strip()
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
     
-    # Optional: Debug print to verify it loaded (prints only first 5 chars)
+    # Optional URL for fetching allowed users from a GitHub raw text file
+    # We use .get() so the bot doesn't crash if this key is missing
+    GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "").strip()
+
+    # Optional: Debug print to verify it loaded (prints only first 5 chars of token)
     print(f"✅ Loaded Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID}")
+    if GITHUB_USERS_URL:
+        print(f"✅ Auth URL loaded: {GITHUB_USERS_URL}")
 
 except FileNotFoundError:
     st.error("❌ `secrets.toml` file not found! Please create `.streamlit/secrets.toml`.")
@@ -29,7 +35,6 @@ except KeyError as e:
 except Exception as e:
     st.error(f"❌ Error loading secrets: {e}")
     st.stop()
-
 # Strategy Settings
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14; SMA_MAJ = 200
 
@@ -205,5 +210,6 @@ if __name__ == '__main__':
     print("🚀 Bot is running...")
     #app.run_polling()
     app.run_polling(stop_signals=None, close_loop=False)
+
 
 
