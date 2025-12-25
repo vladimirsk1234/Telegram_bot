@@ -188,4 +188,6 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT, handle_msg))
     
     print("🚀 Bot is running...")
-    app.run_polling()
+    #app.run_polling()
+    app.run_polling(stop_signals=None, close_loop=False)
+
