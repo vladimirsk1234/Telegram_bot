@@ -77,24 +77,34 @@ def get_sp500_tickers():
 
 def format_market_cap(val):
     if not val or pd.isna(val): return "N/A"
-    if val >= 1e12: return f"{val/1e12:.2f}T"
-    if val >= 1e9: return f"{val/1e9:.2f}B"
-    if val >= 1e6: return f"{val/1e6:.2f}M"
-    return str(val)
+    try:
+        if val >= 1e12: return f"{val/1e12:.2f}T"
+        if val >= 1e9: return f"{val/1e9:.2f}B"
+        if val >= 1e6: return f"{val/1e6:.2f}M"
+        return str(val)
+    except: return "N/A"
 
 def get_extended_info(ticker):
-    # Получаем данные для Dashboard (MC, PE, Change%)
+    # Получаем данные для Dashboard (MC, PE) безопасно
     try:
         t = yf.Ticker(ticker)
-        i = t.info
-        
-        mc = format_market_cap(i.get('marketCap'))
-        pe = i.get('trailingPE') or i.get('forwardPE')
+        # fast_info работает быстрее и надежнее, чем info
+        try:
+            mc = t.fast_info['market_cap']
+        except:
+            mc = None
+            
+        try:
+            # Для PE все еще нужен .info, но он может тормозить
+            i = t.info
+            pe = i.get('trailingPE') or i.get('forwardPE')
+        except:
+            pe = None
+            
         pe_str = f"{pe:.2f}" if pe else "N/A"
+        mc_str = format_market_cap(mc)
         
-        # Change % (быстрая оценка через fast_info если доступно, или history)
-        # Для скорости берем просто info, если нет - потом посчитаем по df
-        return {"mc": mc, "pe": pe_str}
+        return {"mc": mc_str, "pe": pe_str}
     except:
         return {"mc": "N/A", "pe": "N/A"}
 
@@ -205,7 +215,7 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
 def analyze_trade(df, idx):
     r = df.iloc[idx]
     
-    # Собираем данные для расчета стопа, даже если сигнал плохой (для дашборда)
+    # Собираем данные
     price = r['Close']; tp = r['Peak']; crit = r['Crit']; atr = r['ATR']
     sma = r['SMA']
     
@@ -245,19 +255,13 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p):
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
     # 1. EMOJIS & LIGHTS
-    # ATR Light
     atr_pct = (d['ATR'] / d['Close']) * 100
     atr_emo = "🟢"
     if atr_pct > 5.0: atr_emo = "🔴"
     elif atr_pct >= 3.0: atr_emo = "🟡"
     
-    # Trend Light
     trend_emo = "🟢" if d['Trend'] == 1 else ("🔴" if d['Trend'] == -1 else "🟡")
-    
-    # Seq Light
     seq_emo = "🟢" if d['Seq'] == 1 else ("🔴" if d['Seq'] == -1 else "🟡")
-    
-    # MA Light
     ma_emo = "🟢" if d['Close'] > d['SMA'] else "🔴"
     
     # 2. VALIDATION
@@ -279,7 +283,6 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p):
         val_pos = shares * d['P']
         profit = (d['TP'] - d['P']) * shares
         loss = (d['P'] - d['SL']) * shares
-        
         status = "🆕 NEW" if is_new else "♻️ ACTIVE"
         
         html += f"{status}\n"
@@ -288,7 +291,6 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p):
         html += f"🎯 <b>TP</b>:  <code>{d['TP']:.2f}</code> (<code>+${profit:.0f}</code>)\n"
         html += f"⚖️ <b>RR</b>: <code>{d['RR']:.2f}</code> | Size: <code>{shares}</code>\n"
     else:
-        # FAIL REASONS (Как на скрине)
         reasons = []
         if not cond_seq: reasons.append("Seq❌")
         if not cond_ma: reasons.append("MA❌")
@@ -320,7 +322,6 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
             await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
             
-        # Update progress bar every 10 tickers
         if i % 10 == 0 or i == total - 1:
             try:
                 pct = int((i + 1) / total * 10)
@@ -351,36 +352,27 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
             )
             
             if len(df) < scan_p['sma'] + 5:
-                # Если ручной режим - пишем ошибку
+                # Если ручной режим - теперь мы УВИДИМ ошибку
                 if manual_mode:
-                    await context.bot.send_message(chat_id, f"⚠️ {t}: Not enough data", parse_mode='HTML')
+                    await context.bot.send_message(chat_id, f"⚠️ <b>{t}</b>: Not enough data (Loaded {len(df)} bars)", parse_mode='HTML')
                 continue
 
             # --- LOGIC ---
             df = run_vova_logic(df, scan_p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
             
-            # Analyze Current
             valid, d, errs = analyze_trade(df, -1)
-            
-            # Check if New
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
-            
-            # --- FILTERING LOGIC ---
-            # Auto Mode: Показываем только valid
-            # Manual Mode: Показываем ВСЕ (диагностика)
             
             show_card = False
             
             if manual_mode:
-                show_card = True # Всегда показываем для диагностики
+                show_card = True 
             else:
-                # Auto logic
                 if valid:
                     if scan_p['new_only'] and not is_new: 
                         show_card = False
                     else:
-                        # Доп фильтры
                         if d['RR'] >= scan_p['min_rr'] and (d['ATR']/d['P'])*100 <= scan_p['max_atr']:
                              risk_per_share = d['P'] - d['SL']
                              if risk_per_share > 0:
@@ -388,7 +380,9 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
                                  if shares >= 1: show_card = True
             
             if show_card:
+                # Безопасное получение инфо
                 info = get_extended_info(t)
+                
                 risk_per_share = d['P'] - d['SL']
                 shares = 0
                 if risk_per_share > 0:
@@ -399,9 +393,10 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
                 results_found += 1
             
         except Exception as e:
+            # ТЕПЕРЬ МЫ ВИДИМ ОШИБКИ В ЧАТЕ
             if manual_mode:
-                # await context.bot.send_message(chat_id, f"⚠️ {t}: Error {e}")
-                pass
+                await context.bot.send_message(chat_id, f"⚠️ <b>{t} Error:</b> {str(e)}", parse_mode='HTML')
+            pass
 
     global last_scan_time
     last_scan_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -579,13 +574,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid number. Try again.")
             return
 
-    # MANUAL TICKER SCAN
     elif "," in text or (text.isalpha() and len(text) < 6):
         ts = [x.strip().upper() for x in text.split(",") if x.strip()]
         if ts:
             context.user_data['scanning'] = True
             await context.bot.send_message(update.effective_chat.id, f"🔎 Diagnosing: {ts}")
-            # manual_mode=True включает показ ВСЕХ карточек (даже с ошибками)
             await run_scan_process(update, context, p, ts, manual_mode=True)
         return
 
