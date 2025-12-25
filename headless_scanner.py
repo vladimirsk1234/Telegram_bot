@@ -235,41 +235,43 @@ def analyze_trade(df, idx):
 # 4. UI: DASHBOARD STYLE
 # ==========================================
 def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
-    # 1. DATA PREPARATION
+    # 1. ПОДГОТОВКА ДАННЫХ
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
-    # Financials (Robust string handling)
+    # Финансы (безопасное получение)
+    # Используем .get(), чтобы избежать ошибок, если данных нет
     pe_str = str(info.get('pe', 'N/A'))
     mc_str = str(info.get('mc', 'N/A'))
 
-    # ATR Visuals
+    # ATR Визуал
     atr_pct = (d['ATR'] / d['Close']) * 100
     
-    # Lights Logic (Mapped to Emojis)
+    # Логика светофоров (Emojis)
     trend_emo = "🟢" if d['Trend'] == 1 else ("🔴" if d['Trend'] == -1 else "🟡")
     seq_emo = "🟢" if d['Seq'] == 1 else ("🔴" if d['Seq'] == -1 else "🟡")
     ma_emo = "🟢" if d['Close'] > d['SMA'] else "🔴"
     
-    # 2. VALIDATION LOGIC (Mirroring Pine Script)
-    # Structural Checks
+    # 2. ПРОВЕРКА ЛОГИКИ (Как в старом коде + новые проверки)
     cond_seq = d['Seq'] == 1
     cond_ma = d['Close'] > d['SMA']
     cond_trend = d['Trend'] != -1
-    cond_struct = d.get('Struct', False) # Default to False if missing
+    # Используем .get() для совместимости, если ключа нет
+    cond_struct = d.get('Struct', False) 
     
+    # Основная валидация структуры
     is_valid_setup = cond_seq and cond_ma and cond_trend and cond_struct
     
-    # Math Checks
+    # Математическая валидация (Риск и Прибыль должны быть > 0)
     risk = d['P'] - d['SL']
     reward = d['TP'] - d['P']
     is_valid_math = risk > 0 and reward > 0
 
-    # 3. HTML CONSTRUCTION
-    # Shared Header (Ticker, Price, Financials, Context)
+    # 3. СБОРКА HTML (PREMIUM FORMAT)
+    # Заголовок (общий для всех карточек)
     header = f"<b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
     
-    # Context Block (Always visible)
+    # Блок контекста (Финансы + Индикаторы)
     context_block = (
         f"MC: {mc_str} | P/E: {pe_str}\n"
         f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
@@ -277,13 +279,15 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
     )
 
     if is_valid_setup and is_valid_math:
-        # --- VALID TRADE CARD ---
+        # --- КАРТОЧКА АКТИВНОГО СИГНАЛА ---
         status_icon = "🆕" if is_new else "♻️"
         
-        # Trade Math
         profit = reward * shares
-        loss = risk * shares # Positive number for calculation
+        loss = risk * shares
         rr_str = f"{d['RR']:.2f}"
+        
+        # Расчет общей суммы сделки (Цена * Кол-во акций)
+        total_val = shares * d['P']
 
         html = (
             f"{status_icon} {header}"
@@ -294,18 +298,16 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk):
             f"⚖️ Risk/Reward: {rr_str}"
         )
     else:
-        # --- NO SETUP / INVALID CARD (For Manual Scan) ---
-        # Construct Debug String (Pine Script Logic)
+        # --- КАРТОЧКА ОШИБКИ / ОТЛАДКИ ---
         reasons = []
         
-        # 1. Structural Failures
+        # Структурные ошибки
         if not cond_seq: reasons.append("Seq❌")
         if not cond_ma: reasons.append("MA❌")
         if not cond_trend: reasons.append("Trend❌")
         if not cond_struct: reasons.append("Struct❌")
         
-        # 2. Math Failures
-        # We check these even if structure failed, to give full diagnosis
+        # Математические ошибки (добавлено по запросу)
         if risk <= 0:
             reasons.append("❌RR NEGATIVE")
         elif reward <= 0:
@@ -607,6 +609,7 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
 
 
 
