@@ -451,31 +451,9 @@ def get_tf_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
     p = await safe_get_params(context)
-    
-    # Сброс режима ввода, чтобы кнопки работали корректно
+    # Reset input mode on start
     context.user_data['input_mode'] = None
-    
-    # Имя пользователя
-    user_name = update.effective_user.first_name
-
-    # Детальное приветственное сообщение
-    welcome_text = (
-        f"👋 <b>Welcome, {user_name}!</b>\n\n"
-        f"🤖 <b>I am the Vova Sequence Screener.</b>\n"
-        f"I automate the analysis of S&P 500 stocks using a strict quantitative strategy based on Market Structure and Momentum.\n\n"
-        f"<b>🧩 STRATEGY LOGIC:</b>\n"
-        f"<b>1. Macro Trend:</b> I only look for Longs when price is ABOVE the <b>SMA {p['sma']}</b>.\n"
-        f"<b>2. Momentum:</b> I use the <b>Elder Impulse System</b> (EMA + MACD) to confirm Bullish momentum (Green Bars).\n"
-        f"<b>3. Trend Strength:</b> <b>ADX</b> must be > {ADX_T} to ensure the trend is strong enough.\n"
-        f"<b>4. Structure Shift:</b> I identify a valid Break of Structure (New Higher High after a Higher Low) to trigger a signal.\n\n"
-        f"<b>🛡️ RISK MANAGEMENT:</b>\n"
-        f"• <b>ATR Filter:</b> I reject stocks with dangerous volatility (> {p['max_atr']}%).\n"
-        f"• <b>R/R Ratio:</b> I calculate the Risk/Reward based on the structural Stop Loss. Trades below <b>{p['min_rr']}R</b> are skipped.\n"
-        f"• <b>Position Sizing:</b> I calculate exactly how many shares to buy based on your <b>${p['risk_usd']}</b> risk setting.\n\n"
-        f"<i>👇 Use the menu below to configure parameters and Start Scan.</i>"
-    )
-
-    await update.message.reply_html(welcome_text, reply_markup=get_main_keyboard(p))
+    await update.message.reply_html(f"👋 Welcome! Bot is ready.", reply_markup=get_main_keyboard(p))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
@@ -658,6 +636,7 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
 
 
 
