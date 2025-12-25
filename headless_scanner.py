@@ -11,9 +11,24 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 # Suppress pandas warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-# --- CONFIGURATION ---
-TG_TOKEN = "YOUR_TOKEN_HERE"  # Replace or load from env
-ADMIN_ID = 123456789          # Replace with your ID
+try:
+    # st.secrets acts like a dictionary reading from .streamlit/secrets.toml
+    # .strip() removes invisible spaces that cause "InvalidToken" errors
+    TG_TOKEN = st.secrets["TG_TOKEN"].strip()
+    ADMIN_ID = int(st.secrets["ADMIN_ID"])
+    
+    # Optional: Debug print to verify it loaded (prints only first 5 chars)
+    print(f"✅ Loaded Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID}")
+
+except FileNotFoundError:
+    st.error("❌ `secrets.toml` file not found! Please create `.streamlit/secrets.toml`.")
+    st.stop()
+except KeyError as e:
+    st.error(f"❌ Missing key in secrets file: {e}. Check your variable names.")
+    st.stop()
+except Exception as e:
+    st.error(f"❌ Error loading secrets: {e}")
+    st.stop()
 
 # Strategy Settings
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14; SMA_MAJ = 200
@@ -190,4 +205,5 @@ if __name__ == '__main__':
     print("🚀 Bot is running...")
     #app.run_polling()
     app.run_polling(stop_signals=None, close_loop=False)
+
 
