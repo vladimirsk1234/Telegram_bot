@@ -378,35 +378,53 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
 # 6. BOT HANDLERS & HELPERS
 # ==========================================
 def get_allowed_users():
+    """
+    Fetches allowed IDs from GITHUB_USERS_URL (if set) and adds ADMIN_ID.
+    """
     allowed = {ADMIN_ID}
-    if not GITHUB_USERS_URL: return allowed
-    try:
-        response = requests.get(GITHUB_USERS_URL, timeout=5)
-        if response.status_code == 200:
-            for line in response.text.splitlines():
-                if line.strip().isdigit(): allowed.add(int(line.strip()))
-    except: pass
+    
+    if GITHUB_USERS_URL:
+        try:
+            # Скачиваем список (тайм-аут 3 сек)
+            response = requests.get(GITHUB_USERS_URL, timeout=3)
+            if response.status_code == 200:
+                for line in response.text.splitlines():
+                    # Удаляем пробелы и комментарии
+                    clean = line.split('#')[0].strip()
+                    if clean.isdigit():
+                        allowed.add(int(clean))
+        except Exception as e:
+            print(f"⚠️ Error fetching whitelist: {e}")
+            
     return allowed
 
 async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    
+    # 1. Проверка доступа
     if user_id not in get_allowed_users(): 
         try: await update.message.reply_html("⛔ <b>Access Denied</b>")
         except: pass
         return False
+    
+    # 2. Логирование активных пользователей (для /stats)
+    if 'active_users' not in context.bot_data:
+        context.bot_data['active_users'] = set()
+    context.bot_data['active_users'].add(user_id)
+    
     return True
 
 async def safe_get_params(context):
     if 'params' not in context.user_data: context.user_data['params'] = DEFAULT_PARAMS.copy()
     return context.user_data['params']
 
-# MAIN KEYBOARD
+# --- KEYBOARDS ---
 def get_main_keyboard(p):
     risk = f"💸 Risk: ${p['risk_usd']:.0f}"
     rr = f"⚖️ RR: {p['min_rr']}"
     atr = f"📊 ATR Max: {p['max_atr']}%"
     sma = f"📈 SMA: {p['sma']}"
-    tf = f"⏳ TIMEFRAME: {p['tf'][0]}" # D or W
+    tf = f"⏳ TIMEFRAME: {p['tf'][0]}"
     new = f"Only New {'✅' if p['new_only'] else '❌'}"
     return ReplyKeyboardMarkup([
         [KeyboardButton(risk), KeyboardButton(rr)],
@@ -416,39 +434,58 @@ def get_main_keyboard(p):
         [KeyboardButton("ℹ️ HELP / INFO")]
     ], resize_keyboard=True)
 
-# SMA SELECTION KEYBOARD
 def get_sma_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("SMA 100"), KeyboardButton("SMA 150"), KeyboardButton("SMA 200")],
         [KeyboardButton("🔙 Back")]
     ], resize_keyboard=True)
 
-# TIMEFRAME SELECTION KEYBOARD
 def get_tf_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("Daily (D)"), KeyboardButton("Weekly (W)")],
         [KeyboardButton("🔙 Back")]
     ], resize_keyboard=True)
 
+# --- COMMAND HANDLERS ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
     p = await safe_get_params(context)
-    # Reset input mode on start
     context.user_data['input_mode'] = None
     await update.message.reply_html(f"👋 Welcome! Bot is ready.", reply_markup=get_main_keyboard(p))
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Доступ только для Админа
+    if update.effective_user.id != ADMIN_ID: return
+
+    # Загружаем данные
+    allowed_set = get_allowed_users()
+    active_set = context.bot_data.get('active_users', set())
+    
+    msg = (
+        f"📊 <b>BOT STATISTICS</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"✅ <b>Approved (WhiteList):</b> {len(allowed_set)}\n"
+        f"<i>Source: Secrets + URL</i>\n"
+        f"<code>{', '.join(map(str, allowed_set))}</code>\n\n"
+        f"👥 <b>Active (Sessions):</b> {len(active_set)}\n"
+        f"<i>Users who started bot:</i>\n"
+        f"<code>{', '.join(map(str, active_set))}</code>"
+    )
+    await update.message.reply_html(msg)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
     text = update.message.text
     p = await safe_get_params(context)
     
-    # --- NAVIGATION & MODES ---
+    # --- NAVIGATION ---
     if text == "🔙 Back":
         context.user_data['input_mode'] = None
         await update.message.reply_text("🔙 Main Menu", reply_markup=get_main_keyboard(p))
         return
 
-    # --- ACTION BUTTONS ---
+    # --- ACTIONS ---
     if text == "▶️ START SCAN":
         if context.user_data.get('scanning'): return await update.message.reply_text("⚠️ Already running!")
         context.user_data['scanning'] = True
@@ -473,13 +510,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ = Signal appeared on the LAST closed bar only.\n"
             "❌ = Shows all valid active trends.\n\n"
             "<b>🔍 Manual Scan:</b>\n"
-            "Type tickers separated by commas (e.g. <code>AAPL, TSLA, NVDA</code>) in the message window to scan/diagnose them immediately.\n\n"
+            "Type tickers separated by commas (e.g. <code>AAPL, TSLA</code>) to scan them immediately.\n\n"
             "<b>Scanning:</b>\n"
             "Changing parameters <b>during</b> a scan will apply to <i>remaining</i> tickers immediately."
         )
         return await update.message.reply_html(help_text)
 
-    # --- PARAMETER SELECTION MENUS ---
+    # --- MENUS ---
     elif "SMA:" in text:
         context.user_data['input_mode'] = "sma_select"
         await update.message.reply_text("Select SMA Length:", reply_markup=get_sma_keyboard())
@@ -489,7 +526,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Select Timeframe:", reply_markup=get_tf_keyboard())
         return
 
-    # --- SMA SELECTION LOGIC ---
+    # --- LOGIC HANDLERS ---
     if context.user_data.get('input_mode') == "sma_select":
         if text in ["SMA 100", "SMA 150", "SMA 200"]:
             val = int(text.split()[1])
@@ -498,7 +535,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ SMA set to {val}", reply_markup=get_main_keyboard(p))
         return
 
-    # --- TIMEFRAME SELECTION LOGIC ---
     if context.user_data.get('input_mode') == "tf_select":
         if "Daily" in text:
             p['tf'] = "Daily"
@@ -517,7 +553,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Only New Signals: {status}", reply_markup=get_main_keyboard(p))
         return
 
-    # --- NUMERIC INPUT TRIGGERS ---
+    # --- INPUT MODES ---
     elif "Risk:" in text:
         context.user_data['input_mode'] = "risk"
         return await update.message.reply_text("✏️ Enter Risk Amount ($):")
@@ -528,7 +564,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['input_mode'] = "atr"
         return await update.message.reply_text("✏️ Enter Max ATR % (e.g. 5.0):")
 
-    # --- NUMERIC INPUT HANDLING ---
+    # --- INPUT PROCESSING ---
     mode = context.user_data.get('input_mode')
     
     if mode == "risk":
@@ -561,7 +597,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: await update.message.reply_text("❌ Invalid number. Enter e.g. 5.0")
         return
 
-    # --- MANUAL TICKER ENTRY ---
+    # --- MANUAL SCAN ---
     elif "," in text or (text.isalpha() and len(text) < 6):
         ts = [x.strip().upper() for x in text.split(",") if x.strip()]
         if ts:
@@ -570,7 +606,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await run_scan_process(update, context, p, ts, manual_mode=True)
         return
 
-    # Fallback refresh
     context.user_data['params'] = p
     await update.message.reply_text(f"Config: Risk ${p['risk_usd']} | {p['tf']}", reply_markup=get_main_keyboard(p))
 
@@ -580,13 +615,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @st.cache_resource
 def get_bot_app():
+    """Create the Application ONCE and return it."""
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     app = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
+    
+    # --- HANDLERS ---
     app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('stats', stats_command)) # <--- NEW HANDLER
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
     return app
 
 def run_bot_in_background(app):
+    """Run polling in a separate daemon thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -599,21 +640,20 @@ if __name__ == '__main__':
     st.set_page_config(page_title="Vova Bot", page_icon="🤖")
     st.title("💎 Vova Screener Bot (Singleton)")
     
+    # 1. Get the Singleton Bot Instance
     bot_app = get_bot_app()
     
+    # 2. Start Polling in a Thread (Non-blocking)
     if "bot_thread_started" not in st.session_state:
         bot_thread = threading.Thread(target=run_bot_in_background, args=(bot_app,), daemon=True)
         bot_thread.start()
         st.session_state.bot_thread_started = True
         print("✅ Bot polling thread started.")
     
+    # 3. UI Display
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
-
-
-
-
 
 
