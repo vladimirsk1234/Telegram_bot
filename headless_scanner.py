@@ -281,7 +281,7 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
     context_block = (
         f"MC: {mc_str} | P/E: {pe_str}\n"
         f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
-        f"Trend {trend_emo}  Seq {seq_emo}  MA{sma_len} ${d['SMA']:.2f} {ma_emo}\n"
+        f"Trend {trend_emo}  Seq {seq_emo}  MA{sma_len} {ma_emo}\n"
     )
 
     if is_valid_setup and is_valid_math:
@@ -660,3 +660,4 @@ if __name__ == '__main__':
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
     st.success("Bot is running in background.")
+
