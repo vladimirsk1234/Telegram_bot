@@ -28,9 +28,9 @@ def calculate_structure_engine(c_a, h_a, l_a):
     seq_st = np.zeros(n, dtype=np.int64)
     crit_lvl = np.full(n, np.nan, dtype=np.float64)
     res_peak = np.full(n, np.nan, dtype=np.float64)
-    res_struct = np.zeros(n, dtype=np.bool_) 
+    res_struct = np.zeros(n, dtype=np.bool_) # Numba любит типизацию
     
-    # Переменные состояния
+    # Переменные состояния (State Variables)
     s_state = 0
     s_crit = np.nan
     s_h = h_a[0]
@@ -39,9 +39,11 @@ def calculate_structure_engine(c_a, h_a, l_a):
     last_pk = np.nan
     last_tr = np.nan
     
+    # Флаги структуры
     pk_hh = False
     tr_hl = False
     
+    # ГЛАВНЫЙ ЦИКЛ (Тот же самый, что у вас, но компилируемый)
     for i in range(1, n):
         c, h, l = c_a[i], h_a[i], l_a[i]
         
@@ -51,6 +53,7 @@ def calculate_structure_engine(c_a, h_a, l_a):
         prev_sl = s_l 
         
         brk = False
+        # Логика пробоя (Break check)
         if prev_st == 1 and not np.isnan(prev_cr):
             if c < prev_cr: brk = True
         elif prev_st == -1 and not np.isnan(prev_cr):
@@ -59,19 +62,27 @@ def calculate_structure_engine(c_a, h_a, l_a):
         if brk:
             if prev_st == 1: 
                 final_high = max(prev_sh, h)
+                
+                # Проверка Higher High
                 if np.isnan(last_pk): is_hh = True
                 else: is_hh = (final_high > last_pk)
+                
                 pk_hh = is_hh
                 last_pk = final_high 
+                
                 s_state = -1
                 s_h = h; s_l = l
                 s_crit = h
             else: 
                 final_low = min(prev_sl, l)
+                
+                # Проверка Higher Low
                 if np.isnan(last_tr): is_hl = True
                 else: is_hl = (final_low > last_tr)
+                
                 tr_hl = is_hl
                 last_tr = final_low
+                
                 s_state = 1
                 s_h = h; s_l = l
                 s_crit = l
@@ -86,6 +97,7 @@ def calculate_structure_engine(c_a, h_a, l_a):
                 if l <= prev_sl: s_crit = h
                 else: s_crit = prev_cr
             else:
+                # Начальное определение состояния
                 if c > prev_sh: 
                     s_state = 1; s_crit = l
                 elif c < prev_sl: 
@@ -93,13 +105,19 @@ def calculate_structure_engine(c_a, h_a, l_a):
                 else:
                     s_h = max(prev_sh, h); s_l = min(prev_sl, l)
         
+        # Запись результатов в массивы
         seq_st[i] = s_state
         crit_lvl[i] = s_crit
         res_peak[i] = last_pk
-        if pk_hh and tr_hl: res_struct[i] = True
-        else: res_struct[i] = False
+        
+        # Логическое И для структуры (HH + HL)
+        if pk_hh and tr_hl:
+            res_struct[i] = True
+        else:
+            res_struct[i] = False
             
     return seq_st, crit_lvl, res_peak, res_struct
+
 
 # Suppress warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -131,12 +149,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# 1. LOAD SECRETS
+# 1. LOAD SECRETS (ROBUST VERSION)
 # ==========================================
 try:
     TG_TOKEN = st.secrets["TG_TOKEN"].strip()
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
     GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "").strip()
+    # NEW: Load Channel ID
     CHANNEL_ID = st.secrets.get("CHANNEL_ID", None)
     if CHANNEL_ID: CHANNEL_ID = int(CHANNEL_ID)
     print(f"✅ Loaded Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID} | Channel: {CHANNEL_ID}")
@@ -224,6 +243,7 @@ def calc_atr(df, length):
 
 # --- STRATEGY ---
 def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
+    # 1. Стандартные индикаторы (Pandas тут быстрее, оставляем как есть)
     df['SMA'] = calc_sma(df['Close'], len_maj)
     adx, p_di, m_di = calc_adx_pine(df, adx_len)
     
@@ -233,17 +253,21 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     efi = calc_ema(df['Close'].diff() * df['Volume'], len_fast)
     atr = calc_atr(df, atr_len)
     
-    # 2. Подготовка данных для Numba
+    # 2. Подготовка данных для Numba (конвертация в numpy array)
+    # .values - это то, что нужно Numba (без индексов Pandas)
     c_vals = df['Close'].values.astype(np.float64)
     h_vals = df['High'].values.astype(np.float64)
     l_vals = df['Low'].values.astype(np.float64)
     
-    # 3. ЗАПУСК БЫСТРОГО ДВИЖКА (NUMBA)
+    # 3. ЗАПУСК БЫСТРОГО ДВИЖКА
+    # Вся тяжелая логика происходит здесь за миллисекунды
     seq_st, crit_lvl, res_peak, res_struct = calculate_structure_engine(c_vals, h_vals, l_vals)
     
-    # 4. Сборка логики тренда
+    # 4. Сборка логики тренда (векторизованная)
+    # Здесь циклы не нужны, Pandas справляется быстро
     adx_str = adx >= adx_thr
     
+    # Сдвиги (.shift) для сравнения с предыдущим баром
     ema_f_prev = ema_f.shift(1)
     ema_s_prev = ema_s.shift(1)
     hist_prev = hist.shift(1)
@@ -258,6 +282,7 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     t_st[bull] = 1
     t_st[bear] = -1
     
+    # 5. Запись результатов обратно в DataFrame
     df['Seq'] = seq_st
     df['Crit'] = crit_lvl
     df['Peak'] = res_peak
@@ -294,20 +319,20 @@ def analyze_trade(df, idx):
     return valid, data, errs
 
 # ==========================================
-# 4. UI: DASHBOARD STYLE (UPDATED)
+# 4. UI: DASHBOARD STYLE (MODIFIED)
 # ==========================================
+# Updated with 'public_view' argument
 def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len, public_view=False):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
-    # ---------------------------------------------------------
-    # ВАРИАНТ 1: ПУБЛИЧНЫЙ КАНАЛ (SIMPLE SIGNAL)
-    # ---------------------------------------------------------
+    # --- MODIFICATION: PUBLIC VIEW (SIMPLE) ---
     if public_view:
-        setup_type = "LONG 📈" if d['Trend'] == 1 else "SHORT 📉"
+        # Simple Card for Channel
+        trend_icon = "📈 LONG" if d['Trend'] == 1 else "📉 SHORT"
         
         html = (
-            f"<b>{setup_type}: <a href='{tv_link}'>{ticker}</a></b>\n"
+            f"<b>{trend_icon}: <a href='{tv_link}'>{ticker}</a></b>\n"
             f"━━━━━━━━━━━━━━\n"
             f"🛒 <b>Entry:</b> {d['P']:.2f}\n\n"
             f"🎯 <b>TP:</b> {d['TP']:.2f}\n"
@@ -317,9 +342,7 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len, publ
         )
         return html
 
-    # ---------------------------------------------------------
-    # ВАРИАНТ 2: ЛИЧНЫЙ БОТ (FULL TRADER DASHBOARD)
-    # ---------------------------------------------------------
+    # --- PRIVATE VIEW (ORIGINAL DETAILED) ---
     pe_str = str(info.get('pe', 'N/A'))
     mc_str = str(info.get('mc', 'N/A'))
     atr_pct = (d['ATR'] / d['Close']) * 100
@@ -327,14 +350,16 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len, publ
     trend_emo = "🟢" if d['Trend'] == 1 else ("🔴" if d['Trend'] == -1 else "🟡")
     seq_emo = "🟢" if d['Seq'] == 1 else ("🔴" if d['Seq'] == -1 else "🟡")
     ma_emo = "🟢" if d['Close'] > d['SMA'] else "🔴"
-    status_icon = "🆕" if is_new else "♻️"
-
-    # Расчет PnL в долларах
-    risk_val = d['P'] - d['SL']
-    reward_val = d['TP'] - d['P']
-    profit = reward_val * shares
-    loss = risk_val * shares
-    total_val = shares * d['P']
+    
+    cond_seq = d['Seq'] == 1
+    cond_ma = d['Close'] > d['SMA']
+    cond_trend = d['Trend'] != -1
+    cond_struct = d.get('Struct', False)
+    
+    is_valid_setup = cond_seq and cond_ma and cond_trend and cond_struct
+    risk = d['P'] - d['SL']
+    reward = d['TP'] - d['P']
+    is_valid_math = risk > 0 and reward > 0
 
     header = f"<b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
     
@@ -344,18 +369,39 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len, publ
         f"Trend {trend_emo}  Seq {seq_emo}  MA{sma_len} {ma_emo}\n"
     )
 
-    size_line = f"Size: <b>{shares}</b> shares (${total_val:,.0f})\n"
-    sl_line = f"🛑 SL: {d['SL']:.2f}  (-${loss:.0f})\n"
-    tp_line = f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
+    if is_valid_setup and is_valid_math:
+        status_icon = "🆕" if is_new else "♻️"
+        rr_str = f"{d['RR']:.2f}"
+        
+        # FULL VERSION (With Money Management)
+        profit = reward * shares
+        loss = risk * shares
+        total_val = shares * d['P']
+        
+        size_line = f"Size: {shares} shares (${total_val:,.0f})\n"
+        sl_line = f"🛑 SL: {d['SL']:.2f}  (-${loss:.0f})\n"
+        tp_line = f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
 
-    html = (
-        f"{status_icon} {header}"
-        f"{size_line}"
-        f"{context_block}"
-        f"{sl_line}"
-        f"{tp_line}"
-        f"⚖️ RR: {d['RR']:.2f}"
-    )
+        html = (
+            f"{status_icon} {header}"
+            f"{size_line}"
+            f"{context_block}"
+            f"{sl_line}"
+            f"{tp_line}"
+            f"⚖️ Risk/Reward: {rr_str}"
+        )
+    else:
+        # Error logic remains the same
+        reasons = []
+        if not cond_seq: reasons.append("Seq❌")
+        if not cond_ma: reasons.append("MA❌")
+        if not cond_trend: reasons.append("Trend❌")
+        if not cond_struct: reasons.append("Struct❌")
+        if risk <= 0: reasons.append("❌RR NEGATIVE")
+        elif reward <= 0: reasons.append("❌ABOVE HH")
+
+        fail_str = " ".join(reasons) if reasons else "UNKNOWN ERROR"
+        html = f"⛔ {header}{context_block}<b>NO SETUP:</b> {fail_str}"
     
     return html
 
@@ -363,8 +409,10 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len, publ
 # 5. SCANNING PROCESS
 # ==========================================
 async def run_scan_process(update, context, p, tickers, manual_mode=False, is_auto=False):
+    # Determine user chat for Manual scans
     private_chat_id = update.effective_chat.id if update.effective_chat else ADMIN_ID
     
+    # --- MEMORY INIT ---
     ny_tz = pytz.timezone('US/Eastern')
     today_str = datetime.datetime.now(ny_tz).strftime('%Y-%m-%d')
     
@@ -373,13 +421,17 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
     if context.bot_data['channel_mem']['date'] != today_str:
         context.bot_data['channel_mem'] = {'date': today_str, 'tickers': []}
 
+    # --- PROGRESS BAR SETUP (Manual Only) ---
     if not is_auto:
+        # Create a display string of the CURRENT parameters
         config_display = (
             f"⚙️ <b>Active Settings:</b>\n"
             f"Risk: ${p['risk_usd']:.0f} | RR: {p['min_rr']}\n"
             f"SMA: {p['sma']} | ATR Max: {p['max_atr']}%\n"
             f"TF: {p['tf']} | New Only: {'✅' if p['new_only'] else '❌'}"
         )
+        
+        # Send the initial message
         status_msg = await context.bot.send_message(
             chat_id=private_chat_id, 
             text=f"🚀 <b>Scan Started...</b>\n\n{config_display}", 
@@ -395,12 +447,16 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
             await context.bot.send_message(private_chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
             
-        # UI Update (Manual Only)
+        # --- VISUAL PROGRESS BAR UPDATE (Manual Only) ---
+        # Updates every 10 tickers to avoid Telegram limits
         if not is_auto and (i % 10 == 0 or i == total - 1):
             try:
+                # Calculate percentage
                 pct = int((i + 1) / total * 10)
+                # Create bar like [████░░░░░░]
                 bar = "█" * pct + "░" * (10 - pct)
                 percent_num = int((i + 1) / total * 100)
+                
                 await status_msg.edit_text(
                     f"🔎 <b>Scanning S&P 500...</b>\n"
                     f"[{bar}] {percent_num}%\n"
@@ -427,6 +483,7 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
+            # --- DISPLAY LOGIC ---
             show_card = False
             
             if manual_mode: 
@@ -437,25 +494,28 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
                     if p['new_only'] and not is_new: show_card = False
                     else: show_card = True
 
+            # --- SENDING LOGIC ---
             if show_card:
                 info = get_extended_info(t)
                 await asyncio.sleep(0.5)
                 risk_per_share = d['P'] - d['SL']
                 shares = int(p['risk_usd'] / risk_per_share) if risk_per_share > 0 else 0
                 
-                # 1. AUTO SCAN -> CHANNEL (PUBLIC VIEW)
+                # 1. AUTO SCAN -> CHANNEL
                 if is_auto and CHANNEL_ID:
                     if t not in context.bot_data['channel_mem']['tickers']:
-                        # --- PUBLIC VIEW IS TRUE HERE ---
+                        # --- MODIFICATION: PASS public_view=True ---
                         public_card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'], p['sma'], public_view=True)
                         
                         final_msg = public_card + "\n\n💎 <i>Join Premium for Live Alerts!</i>"
+                        
                         await context.bot.send_message(chat_id=CHANNEL_ID, text=final_msg, parse_mode='HTML', disable_web_page_preview=True)
                         context.bot_data['channel_mem']['tickers'].append(t)
                         results_found += 1
                         
-                # 2. MANUAL SCAN -> PRIVATE USER (FULL VIEW)
+                # 2. MANUAL SCAN -> PRIVATE USER
                 elif not is_auto:
+                      # --- MODIFICATION: PASS public_view=False (Explicitly) ---
                       card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'], p['sma'], public_view=False)
                       await context.bot.send_message(chat_id=private_chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
                       results_found += 1
@@ -464,6 +524,7 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
             if manual_mode: await context.bot.send_message(private_chat_id, f"⚠️ {t}: {e}")
             continue
     
+    # Final Report (Manual Only)
     if not is_auto:
         context.user_data['scanning'] = False
         await context.bot.send_message(private_chat_id, f"✅ <b>Scan Complete.</b>\nFound: {results_found} signals.", parse_mode='HTML')
@@ -487,7 +548,14 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in get_allowed_users(): 
         try: 
-            msg = (f"🛑 <b>Authorization Required</b>\n\n🆔 <b>Your ID:</b> <code>{user_id}</code>")
+            msg = (
+                f"🛑 <b>Authorization Required</b>\n\n"
+                f"👋 <b>Welcome!</b> This is a private quantitative scanner.\n"
+                f"To get access, you need to be approved by the administrator.\n\n"
+                f"📩 Please send your ID number to <b>@Vova_Skl</b>:\n\n"
+                f"🆔 <b>Your ID:</b> <code>{user_id}</code>\n"
+                f"<i>(Click the number to copy)</i>"
+            )
             await update.message.reply_html(msg)
         except: pass
         return False
@@ -509,6 +577,7 @@ def get_main_keyboard(p):
     sma = f"📈 SMA: {p['sma']}"
     tf = f"⏳ TIMEFRAME: {p['tf'][0]}"
     new = f"Only New {'✅' if p['new_only'] else '❌'}"
+
     
     return ReplyKeyboardMarkup([
         [KeyboardButton(risk), KeyboardButton(rr)],
@@ -527,18 +596,122 @@ def get_tf_keyboard():
 # --- COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
-    try: p = await safe_get_params(context)
-    except: p = DEFAULT_PARAMS.copy(); context.user_data['params'] = p
+    try:
+        p = await safe_get_params(context)
+    except:
+        p = DEFAULT_PARAMS.copy()
+        context.user_data['params'] = p
 
     context.user_data['input_mode'] = None
-    welcome_text = f"👋 <b>Welcome!</b>\n\nStrategy: Sequence + Momentum + Volatility.\nConfigure below."
+    
+    # Auto-scan trigger via command argument
+    if context.args and context.args[0] == 'autoscan':
+        await update.message.reply_text("🚀 <b>Auto-starting Scan...</b>", parse_mode='HTML')
+        context.user_data['scanning'] = True
+        tickers = get_sp500_tickers()
+        asyncio.create_task(run_scan_process(update, context, p, tickers, manual_mode=False))
+        return
+
+    user_name = update.effective_user.first_name
+    
+    welcome_text = f"""👋 <b>Welcome to the S&P500 Sequence Screener. {user_name}!</b>
+
+I am a specialized quantitative trading assistant designed to automate the technical analysis of <b>S&P 500</b> equities. I operate as a <b>Long-Only</b> system, using a strict, rule-based algorithm to identify high-probability setups based on Market Structure, Momentum, and Volatility.
+
+━━━━━━━━━━━━━━━━━━
+<b>🧩 STRATEGY LOGIC & FORMULAS</b>
+My decision engine requires <b>ALL</b> of the following conditions to be met simultaneously:
+
+<b>1. Macro Trend Filter</b>
+I filter out any stock trading in a downtrend.
+• <b>Logic:</b> <code>Current Price > Simple Moving Average (SMA)</code>
+• <b>Current Setting:</b> SMA {p['sma']}
+
+<b>2. Momentum (Elder Impulse System)</b>
+I confirm bullish momentum using a composite of EMAs and MACD.
+• <b>EMA Stack:</b> Fast EMA ({EMA_F}) AND Slow EMA ({EMA_S}) must both be rising.
+• <b>MACD:</b> The MACD Histogram (12, 26, 9) must be rising (ticking up).
+• <b>Elder Force Index (EFI):</b> <code>EMA(Close Change * Volume, {EMA_F})</code> must be > 0.
+
+<b>3. Trend Strength (ADX)</b>
+I ensure the trend is strong enough to trade.
+• <b>Formula:</b> Wilder’s Smoothing (RMA) over {ADX_L} periods.
+• <b>Condition:</b> <code>ADX ≥ {ADX_T}</code> AND <code>DI+ > DI-</code> (Bulls > Bears).
+
+<b>4. Market Structure Shift</b>
+I do not use standard indicators for entry. I use a custom <b>Sequence Engine</b>.
+• <b>Logic:</b> I map Swing Highs and Swing Lows algorithmically.
+• <b>Trigger:</b> A <b>Break of Structure (BoS)</b> occurs when <code>Close > Previous Swing High</code>.
+• <b>Validation:</b> The structure must confirm a <b>Higher High (HH)</b> following a confirmed <b>Higher Low (HL)</b>.
+
+━━━━━━━━━━━━━━━━━━
+<b>🛡️ RISK MANAGEMENT</b>
+I prioritize capital preservation over signal frequency.
+
+<b>1. Volatility Filter (ATR)</b>
+• <b>Formula:</b> {ATR_L}-period Average True Range.
+• <b>Logic:</b> <code>(ATR / Price) * 100</code> must be ≤ <b>{p['max_atr']}%</b>.
+• <i>Stocks moving more than this daily are rejected.</i>
+
+<b>2. Stop Loss (SL) Calculation</b>
+I calculate two stops and select the <b>tighter (higher)</b> one to minimize risk:
+• <b>Structural SL:</b> The price of the most recent Swing Low.
+• <b>Volatility SL:</b> <code>Price - (1 * ATR)</code>.
+• <b>Final SL:</b> <code>MAX(Structural SL, Volatility SL)</code>.
+
+<b>3. Position Sizing</b>
+I calculate the exact share size based on your dollar risk.
+• <b>Risk Per Share:</b> <code>Entry Price - Stop Loss</code>.
+• <b>Shares:</b> <code>Floor( ${p['risk_usd']} / Risk_Per_Share )</code>.
+
+<b>4. Risk/Reward (RR) Ratio</b>
+• <b>Target:</b> Previous Swing High Peak.
+• <b>Formula:</b> <code>(Target - Entry) / (Entry - SL)</code>.
+• <i>Trades below <b>{p['min_rr']}R</b> are skipped.</i>
+
+━━━━━━━━━━━━━━━━━━
+<b>📚 HELP MENU & CONTROLS</b>
+Use the buttons below to configure your scan:
+
+• <b>💸 Risk:</b> Set your max dollar loss per trade (Current: ${p['risk_usd']}).
+• <b>⚖️ RR:</b> Set minimum Risk/Reward ratio (Current: {p['min_rr']}).
+• <b>📊 ATR Max:</b> Set max allowable daily volatility % (Current: {p['max_atr']}%).
+• <b>📈 SMA:</b> Toggle Macro Trend filter (100, 150, or 200 periods).
+• <b>⏳ TIMEFRAME:</b> Switch between <b>Daily</b> and <b>Weekly</b> charts.
+• <b>Only New:</b>
+  • ✅: Shows only signals triggered <i>today</i>.
+  • ❌: Shows valid trends triggered previously (recycled).
+• <b>Auto Scan:</b>
+  • <b>ON:</b> Runs M-F, 09:35 - 15:35 ET. Alerts once per ticker/day.
+  • <b>OFF:</b> Stops background scanning.
+• <b>▶️ START SCAN:</b> Immediately scans the full S&P 500 with current settings.
+• <b>⏹ STOP SCAN:</b> Aborts any active scanning process.
+
+🔍 <b>DIAGNOSTIC MODE:</b>
+Type any ticker symbol (e.g., <code>AAPL</code>, <code>NVDA</code>, or <code>TSLA, MSFT</code>) into the chat.
+• I will bypass all filters and show you the full dashboard card.
+• This allows you to see <i>exactly</i> why a stock is passing or failing.
+
+━━━━━━━━━━━━━━━━━━
+⚠️ <b>LEGAL DISCLAIMER</b>
+<b>Please Read Carefully:</b>
+This software is a <b>Quantitative Research Tool</b> provided for <b>informational and educational purposes only</b>. It does <b>not</b> constitute financial, investment, legal, or tax advice.
+1. <b>No Fiduciary Duty:</b> The developers and providers of this bot assume no responsibility for your trading decisions.
+2. <b>Risk of Loss:</b> Trading in financial markets involves a substantial risk of loss. You should only trade with capital you can afford to lose.
+3. <b>Accuracy:</b> Data is sourced via third-party APIs (Yahoo Finance) and may be subject to delays or inaccuracies.
+4. <b>User Responsibility:</b> By using this bot, you agree that you are solely responsible for your own investment decisions and results.
+
+<i>👇 Configure your settings below to begin.</i>"""
+
     await update.message.reply_html(welcome_text, reply_markup=get_main_keyboard(p))
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     allowed = get_allowed_users()
     active = context.bot_data.get('active_users', set())
-    msg = (f"📊 <b>BOT STATISTICS</b>\n✅ Approved: {len(allowed)}\n👥 Active: {len(active)}")
+    msg = (f"📊 <b>BOT STATISTICS</b>\n━━━━━━━━━━━━━━━━━━\n"
+           f"✅ <b>Approved:</b> {len(allowed)}\n<code>{', '.join(map(str, allowed))}</code>\n\n"
+           f"👥 <b>Active:</b> {len(active)}\n<code>{', '.join(map(str, active))}</code>")
     await update.message.reply_html(msg)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -551,6 +724,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔙 Main Menu", reply_markup=get_main_keyboard(p))
         return
 
+    # 🔴 KEY FIX: START SCAN IS NOW MANUAL_MODE=FALSE (FILTERED)
     if text == "▶️ START SCAN":
         if context.user_data.get('scanning'): return await update.message.reply_text("⚠️ Already running!")
         context.user_data['scanning'] = True
@@ -565,7 +739,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("🛑 Stopping all scans...", reply_markup=get_main_keyboard(p))
 
     elif text == "ℹ️ HELP / INFO":
-        return await update.message.reply_html("<b>S&P500 SCREENER</b>\nUse buttons to configure risk and filters.")
+        help_text = (
+            "<b>📚 S&P500 SCREENER TECHNICAL MANUAL</b>\n"
+            "<i>Operational Guide & Logic Definitions</i>\n\n"
+            
+            "<b>1. PARAMETER CONFIGURATION (BUTTONS)</b>\n"
+            "These settings directly control the <code>analyze_trade()</code> filtering logic:\n\n"
+            
+            "<b>💸 Risk (Position Sizing)</b>\n"
+            "• <b>Function:</b> Determines trade size based on capital at risk.\n"
+            "• <b>Formula:</b> <code>Shares = Floor( Risk_USD / (Entry - StopLoss) )</code>\n"
+            "• <i>Note: If Risk_USD &lt; (Entry - SL), Share Count = 0.</i>\n\n"
+            
+            "<b>⚖️ RR (Expectancy Filter)</b>\n"
+            "• <b>Function:</b> Filters trades with insufficient profit potential.\n"
+            "• <b>Logic:</b> <code>(Target - Entry) / (Entry - StopLoss) &gt;= Min_RR</code>\n"
+            "• <b>Constraint:</b> If <code>Reward &lt;= 0</code> (Target below Entry), setup is invalidated.\n\n"
+            
+            "<b>📊 ATR Max (Volatility Gate)</b>\n"
+            "• <b>Function:</b> Rejects assets with excessive daily variance.\n"
+            "• <b>Formula:</b> <code>(ATR_14 / Close) * 100 &lt;= Max_ATR_Percentage</code>\n"
+            "• <i>Derivation: Uses Wilder's RMA (alpha=1/14) for smoothing.</i>\n\n"
+            
+            "<b>📈 SMA (Regime Filter)</b>\n"
+            "• <b>Function:</b> Binary filter for Macro Trend.\n"
+            "• <b>Logic:</b> <code>Close &gt; SMA_N</code> (Where N = 100, 150, or 200).\n"
+            "• <i>Effect: Prevents counter-trend entries in bearish regimes.</i>\n\n"
+            
+            "<b>⏳ Timeframe (Granularity)</b>\n"
+            "• <b>Daily (D):</b> Analysis on D1 candles (2-year lookback).\n"
+            "• <b>Weekly (W):</b> Analysis on W1 candles (5-year lookback).\n"
+            "• <i>Constraint: Auto-Scan is disabled in Weekly mode.</i>\n\n"
+            
+            "<b>Only New (Signal Freshness)</b>\n"
+            "• <b>ON (✅):</b> Shows signals where <code>Valid_Today == True</code> AND <code>Valid_Yesterday == False</code>.\n"
+            "• <b>OFF (❌):</b> Shows all setups where <code>Valid_Today == True</code>, regardless of start date.\n\n"
+            
+            "<b>2. SCANNING MODES</b>\n\n"
+            "<b>🤖 Auto Scan (Scheduler)</b>\n"
+            "• <b>Timing:</b> Runs periodically between <b>09:35 and 15:35 ET</b> (US Market Hours).\n"
+            "• <b>Logic:</b> Checks market status; runs only on Weekdays.\n"
+            "• <b>Memory:</b> Uses a daily cache to prevent duplicate alerts for the same ticker.\n\n"
+            
+            "<b>🔍 Diagnostic Mode (Manual Input)</b>\n"
+            "• <b>Trigger:</b> Type a ticker (e.g., <code>AAPL</code>) or list (<code>MSFT, NVDA</code>).\n"
+            "• <b>Behavior:</b> Bypasses filters. Forces execution of dashboard card even for failed setups.\n"
+            "• <b>Output Codes:</b>\n"
+            "  - <code>Seq❌</code>: Market Structure Sequence not Bullish.\n"
+            "  - <code>MA❌</code>: Price below SMA.\n"
+            "  - <code>Trend❌</code>: Momentum/ADX conditions failed.\n"
+            "  - <code>Struct❌</code>: No Break of Structure (HH &gt; HL).\n\n"
+            
+            "<b>3. DISCLAIMER</b>\n"
+            "<i>This software is for quantitative research only. No financial advice provided. User assumes full liability for all trading decisions.</i>"
+        )
+        return await update.message.reply_html(help_text)
+    
 
     elif "SMA:" in text:
         context.user_data['input_mode'] = "sma_select"
@@ -585,8 +814,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ SMA set to {p['sma']}", reply_markup=get_main_keyboard(p))
         return
     if context.user_data.get('input_mode') == "tf_select":
-        if "Daily" in text: p['tf'] = "Daily"
-        elif "Weekly" in text: p['tf'] = "Weekly"
+        if "Daily" in text: 
+            p['tf'] = "Daily"
+        elif "Weekly" in text: 
+            p['tf'] = "Weekly"
+            p['auto_scan'] = False
+            
         context.user_data['input_mode'] = None
         context.user_data['params'] = p
         await context.application.persistence.update_user_data(update.effective_user.id, context.user_data)
@@ -646,6 +879,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: await update.message.reply_text("❌ Invalid number.")
         return
 
+    # 🔴 KEY FIX: Manual Ticker Entry uses manual_mode=True (DIAGNOSTIC MODE)
     if "," in text or (text.isalpha() and len(text) < 6):
         ts = [x.strip().upper() for x in text.split(",") if x.strip()]
         if ts:
@@ -665,7 +899,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def trigger_channel_scan(app):
     print("🚀 Triggering Channel Scan...")
     
-    # 🔔 1. УВЕДОМЛЕНИЕ ВАМ: СТАРТ
+    # 🔔 1. NOTIFICATION START
     try:
         await app.bot.send_message(
             chat_id=ADMIN_ID, 
@@ -674,7 +908,6 @@ async def trigger_channel_scan(app):
         )
     except Exception as e: print(f"Notify Error: {e}")
 
-    # Настройки для канала
     channel_params = {
         'risk_usd': 100.0, 'min_rr': 1.5, 'max_atr': 5.0, 'sma': 200,           
         'tf': 'Daily', 'new_only': True, 'auto_scan': True
@@ -682,15 +915,13 @@ async def trigger_channel_scan(app):
     
     tickers = get_sp500_tickers()
     
-    # Создаем фейковый контекст
     class DummyObj: pass
     u_upd = DummyObj(); u_upd.effective_chat = None 
     u_ctx = DummyObj(); u_ctx.bot = app.bot; u_ctx.user_data = {}; u_ctx.bot_data = app.bot_data 
     
-    # Запуск сканирования
     await run_scan_process(u_upd, u_ctx, channel_params, tickers, manual_mode=False, is_auto=True)
 
-    # 🔔 2. УВЕДОМЛЕНИЕ ВАМ: ФИНИШ
+    # 🔔 2. NOTIFICATION FINISH
     try:
         await app.bot.send_message(
             chat_id=ADMIN_ID, 
@@ -707,20 +938,24 @@ async def force_auto_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- UPDATED SCHEDULER ---
 async def auto_scan_scheduler(app):
-    print("⏳ Scheduler started... (Target: 10:00 ET)")
+    print("⏳ Scheduler started... (Target: 15:00 ET)")
     while True:
         try:
             ny_tz = pytz.timezone('US/Eastern')
             now = datetime.datetime.now(ny_tz)
-            is_market_day = now.weekday() < 5 
-            is_scan_time = (now.hour == 10 and now.minute == 0)
+            
+            is_market_day = now.weekday() < 5 # Monday(0) to Friday(4)
+            
+            # ✅ TRIGGER TIME: 15:00 (3:00 PM) Eastern Time
+            is_scan_time = (now.hour == 15 and now.minute == 0)
             
             if is_market_day and is_scan_time:
-                print("⏰ Time match! Auto-Scan Triggered.")
+                print("🚀 Auto-Scan Triggered for CHANNEL!")
                 await trigger_channel_scan(app)
                 await asyncio.sleep(61)
             
             await asyncio.sleep(30)
+            
         except Exception as e:
             print(f"Scheduler Error: {e}")
             await asyncio.sleep(60)
@@ -729,9 +964,9 @@ async def auto_scan_scheduler(app):
 def get_bot_app():
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
     app = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
-    
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('stats', stats_command))
+    
     # ✅ REGISTER NEW COMMAND
     app.add_handler(CommandHandler('auto', force_auto_scan))
     
