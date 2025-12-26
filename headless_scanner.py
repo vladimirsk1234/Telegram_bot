@@ -636,7 +636,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p['auto_scan'] = False 
         context.user_data['params'] = p
         return await update.message.reply_text("🛑 Stopping all scans...", reply_markup=get_main_keyboard(p))
-   elif text == "ℹ️ HELP / INFO":
+  elif text == "ℹ️ HELP / INFO":
         help_text = (
             "<b>📚 VOVA SCREENER TECHNICAL MANUAL</b>\n"
             "<i>Operational Guide & Logic Definitions</i>\n\n"
