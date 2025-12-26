@@ -277,7 +277,6 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
 
     header = f"<b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
     
-    # SHOW DYNAMIC SMA LENGTH (e.g. MA200)
     context_block = (
         f"MC: {mc_str} | P/E: {pe_str}\n"
         f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
@@ -314,43 +313,61 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
     return html
 
 # ==========================================
-# 5. SCANNING PROCESS (WITH CONFIG BAR)
+# 5. SCANNING PROCESS (WITH SCHEDULER & DEDUPLICATION)
 # ==========================================
-async def run_scan_process(update, context, p, tickers, manual_mode=False):
-    chat_id = update.effective_chat.id
-    
-    # VISUAL CONFIGURATION
-    config_display = (
-        f"⚙️ <b>Active Settings:</b>\n"
-        f"Risk ${p['risk_usd']:.0f} | RR {p['min_rr']} | SMA {p['sma']} | ATR {p['max_atr']}%\n"
-        f"TF: {p['tf']} | New Only: {'✅' if p['new_only'] else '❌'}"
-    )
 
-    status_msg = await context.bot.send_message(
-        chat_id=chat_id, 
-        text=f"🔎 <b>Scanning {len(tickers)} tickers...</b>\n\n{config_display}", 
-        parse_mode='HTML'
-    )
+# --- NEW: Helper to generate time keys for deduplication ---
+def get_time_key(tf):
+    """Generates a unique key for the current market period (Day or Week)"""
+    ny_tz = pytz.timezone('US/Eastern')
+    now = datetime.datetime.now(ny_tz)
+    if tf == 'Weekly':
+        return now.strftime("%Y-W%U") # Year + Week Number
+    return now.strftime("%Y-%m-%d")   # Year + Month + Day
+
+# --- NEW: Internal Scan Logic (Handles both Manual and Auto) ---
+async def run_scan_internal(app, chat_id, p, tickers, manual_mode=False, auto_mode=False):
+    # --- SETUP DEDUPLICATION ---
+    if 'seen_signals' not in app.bot_data: app.bot_data['seen_signals'] = {}
     
+    time_key = get_time_key(p['tf'])
+    # If key doesn't exist (new day/week), reset the set
+    if time_key not in app.bot_data['seen_signals']:
+        app.bot_data['seen_signals'][time_key] = set()
+        
+    seen_today = app.bot_data['seen_signals'][time_key]
+
+    # --- STATUS MESSAGE (Manual Only) ---
+    status_msg = None
+    if not auto_mode:
+        config_display = (
+            f"⚙️ <b>Settings:</b> Risk ${p['risk_usd']:.0f} | SMA {p['sma']} | {p['tf']}"
+        )
+        status_msg = await app.bot.send_message(
+            chat_id=chat_id, 
+            text=f"🔎 <b>Scanning {len(tickers)}...</b>\n{config_display}", 
+            parse_mode='HTML'
+        )
+        # Set scanning flag for user cancellation (manual only)
+        if chat_id not in app.user_data: app.user_data[chat_id] = {}
+        app.user_data[chat_id]['scanning'] = True
+
     results_found = 0
     total = len(tickers)
     
     for i, t in enumerate(tickers):
-        if not context.user_data.get('scanning', False):
-            await context.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
+        # Stop check (Manual only)
+        if not auto_mode and not app.user_data[chat_id].get('scanning', True):
+            await app.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
-            
-        if i % 10 == 0 or i == total - 1:
+
+        # Progress bar (Manual only)
+        if not auto_mode and status_msg and (i % 10 == 0 or i == total - 1):
             try:
                 pct = int((i + 1) / total * 10)
                 bar = "█" * pct + "░" * (10 - pct)
-                percent_num = int((i+1)/total*100)
-                
                 await status_msg.edit_text(
-                    f"<b>SCAN:</b> {i+1}/{total} ({percent_num}%)\n"
-                    f"[{bar}]\n"
-                    f"👉 <i>Checking: {t}</i>\n\n"
-                    f"{config_display}", 
+                    f"<b>SCAN:</b> {i+1}/{total}\n[{bar}]\n👉 <i>{t}</i>", 
                     parse_mode='HTML'
                 )
             except: pass
@@ -364,17 +381,22 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
             
             df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
             
-            if len(df) < p['sma'] + 5:
-                if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t}</b>: Not enough data", parse_mode='HTML')
-                continue
+            if len(df) < p['sma'] + 5: continue
             
             df = run_vova_logic(df, p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
             valid, d, errs = analyze_trade(df, -1)
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
+            # --- DECISION LOGIC ---
             show_card = False
-            if manual_mode: show_card = True
+            
+            # 1. Deduplication Check for AUTO MODE
+            if auto_mode:
+                if t in seen_today: continue # SKIP if seen today
+            
+            if manual_mode: 
+                show_card = True
             elif valid:
                 if p['new_only'] and not is_new: show_card = False
                 elif d['RR'] >= p['min_rr'] and (d['ATR']/d['P'])*100 <= p['max_atr']:
@@ -384,22 +406,82 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
                         if shares >= 1: show_card = True
             
             if show_card:
+                # If triggered in Auto Mode, mark as seen
+                if auto_mode:
+                    seen_today.add(t)
+                    app.bot_data['seen_signals'][time_key] = seen_today # Force update for persistence
+
                 info = get_extended_info(t)
                 risk_per_share = d['P'] - d['SL']
                 shares = int(p['risk_usd'] / risk_per_share) if risk_per_share > 0 else 0
                 
-                # PASSING SMA LENGTH HERE
                 card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'], p['sma'])
-                
-                await context.bot.send_message(chat_id=chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
+                await app.bot.send_message(chat_id=chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
                 results_found += 1
                 
         except Exception as e:
-            if manual_mode: await context.bot.send_message(chat_id, f"⚠️ <b>{t} Error:</b> {str(e)}", parse_mode='HTML')
+            # logger.error(f"Scan error {t}: {e}") # Optional logging
             continue
             
-    await context.bot.send_message(chat_id=chat_id, text=f"🏁 <b>SCAN COMPLETE</b>\n✅ Found: {results_found}", parse_mode='HTML')
-    context.user_data['scanning'] = False
+    if not auto_mode and status_msg:
+        await app.bot.send_message(chat_id=chat_id, text=f"🏁 <b>SCAN COMPLETE</b>\n✅ Found: {results_found}", parse_mode='HTML')
+        app.user_data[chat_id]['scanning'] = False
+
+# Wrapper for command-based trigger
+async def run_scan_process(update, context, p, tickers, manual_mode=False):
+    await run_scan_internal(context.application, update.effective_chat.id, p, tickers, manual_mode)
+
+# --- NEW: Market Scheduler Job ---
+async def market_scheduler_job(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every minute, executes scan only at XX:35 ET during market hours"""
+    # 1. Check Master Switch
+    if not context.bot_data.get('auto_scan_active', False):
+        return
+
+    # 2. Check Time (US/Eastern)
+    ny_tz = pytz.timezone('US/Eastern')
+    now = datetime.datetime.now(ny_tz)
+    
+    # Weekend Check
+    if now.weekday() >= 5: return 
+
+    # Market Hours: 09:30 - 16:00. We scan at XX:35.
+    # Hours allowed: 09, 10, 11, 12, 13, 14, 15.
+    if not (9 <= now.hour <= 15): return
+    
+    # Exact Minute Check (09:35 start, 15:35 last)
+    if now.minute != 35: return
+
+    # Prevent double run in same minute (idempotency safety)
+    last_run = context.bot_data.get('last_auto_scan_ts')
+    current_ts = now.strftime("%Y%m%d%H%M")
+    if last_run == current_ts: return
+    context.bot_data['last_auto_scan_ts'] = current_ts
+
+    # 3. Trigger Scan for ALL active users
+    if 'active_users' not in context.bot_data: return
+    
+    tickers = get_sp500_tickers()
+    
+    for user_id in context.bot_data['active_users']:
+        try:
+            # Retrieve user data safely from application
+            user_data = context.application.user_data.get(user_id)
+            if not user_data: continue
+            
+            # Use user's specific params
+            p = user_data.get('params', DEFAULT_PARAMS.copy())
+            
+            # Trigger the scan logic in AUTO MODE
+            await run_scan_internal(
+                context.application, 
+                user_id, 
+                p, 
+                tickers, 
+                auto_mode=True
+            )
+        except Exception as e:
+            logger.error(f"Auto scan error for {user_id}: {e}")
 
 # ==========================================
 # 6. BOT HANDLERS & HELPERS
@@ -436,22 +518,42 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data['active_users'].add(user_id)
     return True
 
+# --- NEW: PERSISTENCE FIX (Soft Merge) ---
 async def safe_get_params(context):
-    if 'params' not in context.user_data: context.user_data['params'] = DEFAULT_PARAMS.copy()
-    return context.user_data['params']
+    # Ensure params dict exists
+    if 'params' not in context.user_data:
+        context.user_data['params'] = DEFAULT_PARAMS.copy()
+    
+    # Soft Merge: Ensure all default keys exist, but DO NOT overwrite user values
+    current = context.user_data['params']
+    changed = False
+    for k, v in DEFAULT_PARAMS.items():
+        if k not in current:
+            current[k] = v
+            changed = True
+            
+    if changed:
+        context.user_data['params'] = current
+        
+    return current
 
-# --- KEYBOARDS ---
-def get_main_keyboard(p):
+# --- KEYBOARDS (UPDATED WITH AUTO BUTTON) ---
+def get_main_keyboard(p, auto_active=False):
     risk = f"💸 Risk: ${p['risk_usd']:.0f}"
     rr = f"⚖️ RR: {p['min_rr']}"
     atr = f"📊 ATR Max: {p['max_atr']}%"
     sma = f"📈 SMA: {p['sma']}"
-    tf = f"⏳ TIMEFRAME: {p['tf'][0]}"
-    new = f"Only New {'✅' if p['new_only'] else '❌'}"
+    tf = f"⏳ TF: {p['tf'][0]}"
+    new = f"New: {'✅' if p['new_only'] else '❌'}"
+    
+    # New Auto Button
+    auto_status = "ON 🟢" if auto_active else "OFF 🔴"
+    auto_btn = f"🤖 Auto: {auto_status}"
+    
     return ReplyKeyboardMarkup([
         [KeyboardButton(risk), KeyboardButton(rr)],
         [KeyboardButton(atr), KeyboardButton(sma)],
-        [KeyboardButton(tf), KeyboardButton(new)], 
+        [KeyboardButton(tf), KeyboardButton(new), KeyboardButton(auto_btn)],
         [KeyboardButton("▶️ START SCAN"), KeyboardButton("⏹ STOP SCAN")],
         [KeyboardButton("ℹ️ HELP / INFO")]
     ], resize_keyboard=True)
@@ -465,12 +567,8 @@ def get_tf_keyboard():
 # --- COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
-    try:
-        p = await safe_get_params(context)
-        if 'sma' not in p: p = DEFAULT_PARAMS.copy()
-    except:
-        p = DEFAULT_PARAMS.copy()
-        context.user_data['params'] = p
+    # Use the safe getter
+    p = await safe_get_params(context)
 
     context.user_data['input_mode'] = None
     
@@ -478,11 +576,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚀 <b>Auto-starting Scan...</b>", parse_mode='HTML')
         context.user_data['scanning'] = True
         tickers = get_sp500_tickers()
-        asyncio.create_task(run_scan_process(update, context, p, tickers, manual_mode=False))
+        await run_scan_process(update, context, p, tickers, manual_mode=False)
         return
 
     user_name = update.effective_user.first_name
     adx_val = globals().get('ADX_T', 20)
+    auto_active = context.bot_data.get('auto_scan_active', False)
     
     welcome_text = f"""👋 <b>Welcome, {user_name}!</b>
 
@@ -502,7 +601,7 @@ I automate the analysis of S&P 500 stocks using a strict quantitative strategy b
 
 <i>👇 Use the menu below to configure parameters and Start Scan.</i>"""
 
-    await update.message.reply_html(welcome_text, reply_markup=get_main_keyboard(p))
+    await update.message.reply_html(welcome_text, reply_markup=get_main_keyboard(p, auto_active))
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -513,151 +612,4 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
            f"👥 <b>Active:</b> {len(active)}\n<code>{', '.join(map(str, active))}</code>")
     await update.message.reply_html(msg)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update, context): return
-    text = update.message.text
-    p = await safe_get_params(context)
-    
-    if text == "🔙 Back":
-        context.user_data['input_mode'] = None
-        await update.message.reply_text("🔙 Main Menu", reply_markup=get_main_keyboard(p))
-        return
-    if text == "▶️ START SCAN":
-        if context.user_data.get('scanning'): return await update.message.reply_text("⚠️ Already running!")
-        context.user_data['scanning'] = True
-        tickers = get_sp500_tickers()
-        asyncio.create_task(run_scan_process(update, context, p, tickers, manual_mode=False))
-        return
-    elif text == "⏹ STOP SCAN":
-        context.user_data['scanning'] = False
-        return await update.message.reply_text("🛑 Stopping...")
-    elif text == "ℹ️ HELP / INFO":
-        help_text = (
-            "<b>📚 TECHNICAL MANUAL</b>\n\n"
-            "<b>💸 Risk:</b> Dollar amount risked per trade. Used to calculate position size (Shares = Risk / (Entry - SL)).\n\n"
-            "<b>⚖️ RR (Risk/Reward):</b> Minimum Ratio required. Formula: <code>(TP - Entry) / (Entry - SL)</code>. Scan ignores trades below this.\n\n"
-            "<b>📊 ATR Max:</b> Volatility filter. If <code>(ATR / Price) * 100</code> > Max %, trade is skipped (too volatile).\n\n"
-            "<b>📈 SMA:</b> Trend Filter. Trade must be ABOVE this SMA to be valid (Long only).\n\n"
-            "<b>⏳ TIMEFRAME:</b>\n• <b>Daily (D):</b> 2 years history.\n• <b>Weekly (W):</b> 5 years history.\n\n"
-            "<b>Only New:</b>\n✅ = Signal appeared on the LAST closed bar only.\n❌ = Shows all valid active trends.\n\n"
-            "<b>🔍 Manual Scan:</b>\nType tickers separated by commas (e.g. <code>AAPL, TSLA</code>) to scan them immediately.\n\n"
-            "<b>Scanning:</b>\nChanging parameters <b>during</b> a scan will apply to <i>remaining</i> tickers immediately."
-        )
-        return await update.message.reply_html(help_text)
-    
-    elif "SMA:" in text:
-        context.user_data['input_mode'] = "sma_select"
-        await update.message.reply_text("Select SMA Length:", reply_markup=get_sma_keyboard())
-        return
-    elif "TIMEFRAME:" in text:
-        context.user_data['input_mode'] = "tf_select"
-        await update.message.reply_text("Select Timeframe:", reply_markup=get_tf_keyboard())
-        return
-
-    if context.user_data.get('input_mode') == "sma_select":
-        if text in ["SMA 100", "SMA 150", "SMA 200"]:
-            p['sma'] = int(text.split()[1])
-            context.user_data['input_mode'] = None
-            await update.message.reply_text(f"✅ SMA set to {p['sma']}", reply_markup=get_main_keyboard(p))
-        return
-    if context.user_data.get('input_mode') == "tf_select":
-        if "Daily" in text: p['tf'] = "Daily"
-        elif "Weekly" in text: p['tf'] = "Weekly"
-        context.user_data['input_mode'] = None
-        await update.message.reply_text(f"✅ Timeframe set to {p['tf']}", reply_markup=get_main_keyboard(p))
-        return
-
-    if "Only New" in text: 
-        p['new_only'] = not p['new_only']
-        status = "ENABLED" if p['new_only'] else "DISABLED"
-        await update.message.reply_text(f"✅ Only New Signals: {status}", reply_markup=get_main_keyboard(p))
-        return
-
-    if "Risk:" in text:
-        context.user_data['input_mode'] = "risk"
-        return await update.message.reply_text("✏️ Enter Risk Amount ($):")
-    elif "RR:" in text:
-        context.user_data['input_mode'] = "rr"
-        return await update.message.reply_text("✏️ Enter Min R/R (e.g. 1.5):")
-    elif "ATR Max:" in text:
-        context.user_data['input_mode'] = "atr"
-        return await update.message.reply_text("✏️ Enter Max ATR % (e.g. 5.0):")
-
-    mode = context.user_data.get('input_mode')
-    if mode == "risk":
-        try: 
-            val = float(text)
-            if val < 1: raise ValueError
-            p['risk_usd'] = val
-            context.user_data['input_mode'] = None
-            await update.message.reply_text(f"✅ Risk updated to ${val}", reply_markup=get_main_keyboard(p))
-        except: await update.message.reply_text("❌ Invalid amount.")
-        return
-    elif mode == "rr":
-        try:
-            val = float(text)
-            if val < 0.1: raise ValueError
-            p['min_rr'] = val
-            context.user_data['input_mode'] = None
-            await update.message.reply_text(f"✅ Min RR updated to {val}", reply_markup=get_main_keyboard(p))
-        except: await update.message.reply_text("❌ Invalid number.")
-        return
-    elif mode == "atr":
-        try:
-            val = float(text)
-            if val < 0.1: raise ValueError
-            p['max_atr'] = val
-            context.user_data['input_mode'] = None
-            await update.message.reply_text(f"✅ Max ATR updated to {val}%", reply_markup=get_main_keyboard(p))
-        except: await update.message.reply_text("❌ Invalid number.")
-        return
-
-    if "," in text or (text.isalpha() and len(text) < 6):
-        ts = [x.strip().upper() for x in text.split(",") if x.strip()]
-        if ts:
-            context.user_data['scanning'] = True
-            await context.bot.send_message(update.effective_chat.id, f"🔎 Diagnosing: {ts}")
-            await run_scan_process(update, context, p, ts, manual_mode=True)
-        return
-
-    context.user_data['params'] = p
-    await update.message.reply_text(f"Config: Risk ${p['risk_usd']} | {p['tf']}", reply_markup=get_main_keyboard(p))
-
-# ==========================================
-# 7. ARCHITECTURE: SINGLETON BOT
-# ==========================================
-@st.cache_resource
-def get_bot_app():
-    my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
-    app = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
-    app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('stats', stats_command))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    return app
-
-def run_bot_in_background(app):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        if not app.updater or not app.updater.running:
-            app.run_polling(stop_signals=None, close_loop=False)
-    except Exception as e:
-        print(f"Bot thread error: {e}")
-
-if __name__ == '__main__':
-    st.set_page_config(page_title="Vova Bot", page_icon="🤖")
-    st.title("💎 Vova Screener Bot (Singleton)")
-    
-    bot_app = get_bot_app()
-    
-    if "bot_thread_started" not in st.session_state:
-        bot_thread = threading.Thread(target=run_bot_in_background, args=(bot_app,), daemon=True)
-        bot_thread.start()
-        st.session_state.bot_thread_started = True
-        print("✅ Bot polling thread started.")
-    
-    ny_tz = pytz.timezone('US/Eastern')
-    now_ny = datetime.datetime.now(ny_tz)
-    st.metric("USA Market Time", now_ny.strftime("%H:%M"))
-    st.success("Bot is running in background.")
-
+async
