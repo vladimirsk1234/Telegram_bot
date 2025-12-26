@@ -523,17 +523,17 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
                         public_card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'], p['sma'], public_view=True)
                        
                        # --- MODIFICATION: Footer with Legend & Disclaimer ---
-                        legend = (
-                            "\n\nℹ️ <b>Strategy & Legend:</b>\n"
-                            "Check the 📌 <b>Pinned Message</b> for full details on logic and indicators."
-                        )
+                       # legend = (
+                       #     "\n\nℹ️ <b>Strategy & Legend:</b>\n"
+                       #     "Check the 📌 <b>Pinned Message</b> for full details on logic and indicators."
+                       # )
                         
-                        disclaimer = (
-                            "\n\n⚠️ <i>Educational purpose only. Trading involves high risk. "
-                            "You are solely responsible for your decisions.</i>"
-                        )
+                       # disclaimer = (
+                       #     "\n\n⚠️ <i>Educational purpose only. Trading involves high risk. "
+                       #     "You are solely responsible for your decisions.</i>"
+                       # )
                         
-                        final_msg = public_card + legend + disclaimer                 
+                        final_msg = public_card # + legend + disclaimer                 
                         
                         await context.bot.send_message(chat_id=CHANNEL_ID, text=final_msg, parse_mode='HTML', disable_web_page_preview=True)
                         context.bot_data['channel_mem']['tickers'].append(t)
