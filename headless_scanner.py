@@ -60,8 +60,8 @@ EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
 SMA_MAJ = 200
 
 DEFAULT_PARAMS = {
-    'risk_usd': 50.0,
-    'min_rr': 1.25,
+    'risk_usd': 100.0,
+    'min_rr': 1.5,
     'max_atr': 5.0,
     'sma': 200,
     'tf': 'Daily',
