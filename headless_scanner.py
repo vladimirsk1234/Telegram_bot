@@ -638,16 +638,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("🛑 Stopping all scans...", reply_markup=get_main_keyboard(p))
     elif text == "ℹ️ HELP / INFO":
         help_text = (
-            "<b>📚 TECHNICAL MANUAL</b>\n\n"
-            "<b>💸 Risk:</b> Dollar amount risked per trade.\n"
-            "<b>⚖️ RR:</b> Minimum Ratio (Reward/Risk).\n"
-            "<b>📊 ATR Max:</b> Volatility filter.\n"
-            "<b>📈 SMA:</b> Trend Filter (Price > SMA).\n"
-            "<b>⏳ TIMEFRAME:</b> Daily or Weekly.\n"
-            "<b>Only New:</b> Shows only fresh signals.\n\n"
-            "<b>Auto Scan:</b>\n"
-            "Runs automatically 09:35 - 15:35 ET (Daily only).\n"
-            "Does NOT repeat same signals in one day."
+            "<b>📚 VOVA SCREENER TECHNICAL MANUAL</b>\n"
+            "<i>Operational Guide & Logic Definitions</i>\n\n"
+            
+            "<b>1. PARAMETER CONFIGURATION (BUTTONS)</b>\n"
+            "These settings directly control the <code>analyze_trade()</code> filtering logic:\n\n"
+            
+            "<b>💸 Risk (Position Sizing)</b>\n"
+            "• <b>Function:</b> Determines trade size based on capital at risk.\n"
+            "• <b>Formula:</b> <code>Shares = Floor( Risk_USD / (Entry - StopLoss) )</code>\n"
+            "• <i>Note: If Risk_USD < (Entry - SL), Share Count = 0 (Trade Skipped).</i>\n\n"
+            
+            "<b>⚖️ RR (Expectancy Filter)</b>\n"
+            "• <b>Function:</b> Filters trades with insufficient profit potential.\n"
+            "• <b>Logic:</b> <code>(Target - Entry) / (Entry - StopLoss) ≥ Min_RR</code>\n"
+            "• <b>Constraint:</b> If <code>Reward ≤ 0</code> (Target below Entry), setup is invalidated.\n\n"
+            
+            "<b>📊 ATR Max (Volatility Gate)</b>\n"
+            "• <b>Function:</b> Rejects assets with excessive daily variance.\n"
+            "• <b>Formula:</b> <code>(ATR_14 / Close) * 100 ≤ Max_ATR_Percentage</code>\n"
+            "• <i>Derivation: Uses Wilder's RMA (alpha=1/14) for smoothing.</i>\n\n"
+            
+            "<b>📈 SMA (Regime Filter)</b>\n"
+            "• <b>Function:</b> Binary filter for Macro Trend.\n"
+            "• <b>Logic:</b> <code>Close > SMA_N</code> (Where N = 100, 150, or 200).\n"
+            "• <i>Effect: Prevents counter-trend entries in bearish regimes.</i>\n\n"
+            
+            "<b>⏳ Timeframe (Granularity)</b>\n"
+            "• <b>Daily (D):</b> Analysis on D1 candles (2-year lookback).\n"
+            "• <b>Weekly (W):</b> Analysis on W1 candles (5-year lookback).\n"
+            "• <i>Constraint: Auto-Scan is disabled in Weekly mode.</i>\n\n"
+            
+            "<b>Only New (Signal Freshness)</b>\n"
+            "• <b>ON (✅):</b> Shows signals where <code>Valid_Today == True</code> AND <code>Valid_Yesterday == False</code>.\n"
+            "• <b>OFF (❌):</b> Shows all setups where <code>Valid_Today == True</code>, regardless of start date.\n\n"
+            
+            "<b>2. SCANNING MODES</b>\n\n"
+            "<b>🤖 Auto Scan (Scheduler)</b>\n"
+            "• <b>Timing:</b> Runs periodically between <b>09:35 and 15:35 ET</b> (US Market Hours).\n"
+            "• <b>Logic:</b> Checks market status; runs only on Weekdays.\n"
+            "• <b>Memory:</b> Uses a daily cache (<code>user_data['auto_mem']</code>) to prevent duplicate alerts for the same ticker in one session.\n\n"
+            
+            "<b>🔍 Diagnostic Mode (Manual Input)</b>\n"
+            "• <b>Trigger:</b> Type a ticker (e.g., <code>AAPL</code>) or list (<code>MSFT, NVDA</code>).\n"
+            "• <b>Behavior:</b> Bypasses <code>if valid:</code> check. Forces execution of <code>format_dashboard_card()</code> even for failed setups.\n"
+            "• <b>Output Codes:</b>\n"
+            "  - <code>Seq❌</code>: Market Structure Sequence not Bullish.\n"
+            "  - <code>MA❌</code>: Price below SMA.\n"
+            "  - <code>Trend❌</code>: Momentum/ADX conditions failed.\n"
+            "  - <code>Struct❌</code>: No Break of Structure (HH > HL).\n\n"
+            
+            "<b>3. DISCLAIMER</b>\n"
+            "<i>This software is for quantitative research only. No financial advice provided. User assumes full liability for all trading decisions.</i>"
         )
         return await update.message.reply_html(help_text)
     
