@@ -254,7 +254,8 @@ def analyze_trade(df, idx):
 # ==========================================
 # 4. UI: DASHBOARD STYLE
 # ==========================================
-def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
+# Updated with 'public_view' argument
+def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len, public_view=False):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
@@ -286,20 +287,34 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
 
     if is_valid_setup and is_valid_math:
         status_icon = "🆕" if is_new else "♻️"
-        profit = reward * shares
-        loss = risk * shares
         rr_str = f"{d['RR']:.2f}"
-        total_val = shares * d['P']
+        
+        # --- LOGIC SPLIT: PUBLIC vs PRIVATE ---
+        if public_view:
+            # CLEAN VERSION (No Shares, No Dollar PnL)
+            size_line = "" 
+            sl_line = f"🛑 SL: {d['SL']:.2f}\n"
+            tp_line = f"🎯 TP: {d['TP']:.2f}\n"
+        else:
+            # FULL VERSION (With Money Management)
+            profit = reward * shares
+            loss = risk * shares
+            total_val = shares * d['P']
+            
+            size_line = f"Size: {shares} shares (${total_val:,.0f})\n"
+            sl_line = f"🛑 SL: {d['SL']:.2f}  (-${loss:.0f})\n"
+            tp_line = f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
 
         html = (
             f"{status_icon} {header}"
-            f"Size: {shares} shares (${total_val:,.0f})\n"
+            f"{size_line}"
             f"{context_block}"
-            f"🛑 SL: {d['SL']:.2f}  (-${loss:.0f})\n"
-            f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
+            f"{sl_line}"
+            f"{tp_line}"
             f"⚖️ Risk/Reward: {rr_str}"
         )
     else:
+        # Error logic remains the same
         reasons = []
         if not cond_seq: reasons.append("Seq❌")
         if not cond_ma: reasons.append("MA❌")
