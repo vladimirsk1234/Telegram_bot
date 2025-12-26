@@ -1022,7 +1022,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         "The service is provided 'as-is' without warranties of uptime or accuracy.\n\n"
         
         "<i>👇 By clicking 'I AGREE' below, you confirm that you have read, understood, and accepted these terms and release the provider from all liability.</i>"
-    )
+        )
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ I AGREE & ACCEPT", callback_data=callback_data)],
