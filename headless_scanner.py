@@ -420,6 +420,7 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
             # --- SENDING LOGIC ---
             if show_card:
                 info = get_extended_info(t)
+                await asyncio.sleep(0.5)
                 risk_per_share = d['P'] - d['SL']
                 shares = int(p['risk_usd'] / risk_per_share) if risk_per_share > 0 else 0
                 
