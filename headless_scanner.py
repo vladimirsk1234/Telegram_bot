@@ -767,12 +767,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• <b>ON (✅):</b> Shows signals where <code>Valid_Today == True</code> AND <code>Valid_Yesterday == False</code>.\n"
             "• <b>OFF (❌):</b> Shows all setups where <code>Valid_Today == True</code>, regardless of start date.\n\n"
             
-            "<b>2. SCANNING MODES</b>\n\n"
-            "<b>🤖 Auto Scan (Scheduler)</b>\n"
-            "• <b>Timing:</b> Runs periodically between <b>09:35 and 15:35 ET</b> (US Market Hours).\n"
-            "• <b>Logic:</b> Checks market status; runs only on Weekdays.\n"
-            "• <b>Memory:</b> Uses a daily cache to prevent duplicate alerts for the same ticker.\n\n"
-            
             "<b>🔍 Diagnostic Mode (Manual Input)</b>\n"
             "• <b>Trigger:</b> Type a ticker (e.g., <code>AAPL</code>) or list (<code>MSFT, NVDA</code>).\n"
             "• <b>Behavior:</b> Bypasses filters. Forces execution of dashboard card even for failed setups.\n"
@@ -896,7 +890,7 @@ async def auto_scan_scheduler(app):
             
             # ✅ TRIGGER TIME: 15:00 (3:00 PM) Eastern Time
             # This logic ensures it runs ONLY at 3 PM, not every hour.
-            is_scan_time = (now.hour == 15 and now.minute == 0)
+            is_scan_time = (now.hour == 10 and now.minute == 0)
             
             if is_market_day and is_scan_time:
                 print("🚀 Auto-Scan Triggered for CHANNEL!")
@@ -911,7 +905,6 @@ async def auto_scan_scheduler(app):
                     
                     # ✅ THIS ENSURES ONLY FRESH SIGNALS ARE SENT
                     'new_only': True,    
-                    
                     'auto_scan': True
                 }
                 
