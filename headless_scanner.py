@@ -66,6 +66,7 @@ DEFAULT_PARAMS = {
     'sma': 200,
     'tf': 'Daily',
     'new_only': True,
+    'auto_scan': False, # 1️⃣ Added Auto-Scan Param
 }
 
 # ==========================================
@@ -173,7 +174,6 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
             
         if brk:
             if prev_st == 1: 
-                # --- WICK FIX ---
                 final_high = max(prev_sh, h)
                 is_hh = True if np.isnan(last_pk) else (final_high > last_pk)
                 pk_hh = is_hh
@@ -183,7 +183,6 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
                 s_h = h; s_l = l
                 s_crit = h
             else: 
-                # --- WICK FIX ---
                 final_low = min(prev_sl, l)
                 is_hl = True if np.isnan(last_tr) else (final_low > last_tr)
                 tr_hl = is_hl
@@ -277,7 +276,6 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
 
     header = f"<b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
     
-    # SHOW DYNAMIC SMA LENGTH (e.g. MA200)
     context_block = (
         f"MC: {mc_str} | P/E: {pe_str}\n"
         f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
@@ -314,12 +312,11 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
     return html
 
 # ==========================================
-# 5. SCANNING PROCESS (WITH CONFIG BAR)
+# 5. SCANNING PROCESS (WITH CONFIG BAR & MEMORY)
 # ==========================================
 async def run_scan_process(update, context, p, tickers, manual_mode=False):
     chat_id = update.effective_chat.id
     
-    # VISUAL CONFIGURATION
     config_display = (
         f"⚙️ <b>Active Settings:</b>\n"
         f"Risk ${p['risk_usd']:.0f} | RR {p['min_rr']} | SMA {p['sma']} | ATR {p['max_atr']}%\n"
@@ -334,6 +331,17 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
     
     results_found = 0
     total = len(tickers)
+
+    # 3️⃣ DAILY SIGNAL MEMORY INIT (Per User)
+    ny_tz = pytz.timezone('US/Eastern')
+    today_str = datetime.datetime.now(ny_tz).strftime('%Y-%m-%d')
+    
+    if 'auto_mem' not in context.user_data: 
+        context.user_data['auto_mem'] = {'date': today_str, 'tickers': []}
+    
+    # Reset memory if day changed
+    if context.user_data['auto_mem']['date'] != today_str:
+        context.user_data['auto_mem'] = {'date': today_str, 'tickers': []}
     
     for i, t in enumerate(tickers):
         if not context.user_data.get('scanning', False):
@@ -370,13 +378,23 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
             
             df = run_vova_logic(df, p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
             valid, d, errs = analyze_trade(df, -1)
+            
             valid_prev, _, _ = analyze_trade(df, -2)
             is_new = not valid_prev
             
+            # 3️⃣ MEMORY CHECK
+            already_shown = t in context.user_data['auto_mem']['tickers']
+
             show_card = False
-            if manual_mode: show_card = True
+            if manual_mode: 
+                show_card = True
             elif valid:
-                if p['new_only'] and not is_new: show_card = False
+                # 4️⃣ MANUAL SCAN OVERRIDE LOGIC (If Manual -> Ignore Memory)
+                # If Auto -> Check Memory
+                if already_shown: 
+                    show_card = False
+                elif p['new_only'] and not is_new: 
+                    show_card = False
                 elif d['RR'] >= p['min_rr'] and (d['ATR']/d['P'])*100 <= p['max_atr']:
                     risk_per_share = d['P'] - d['SL']
                     if risk_per_share > 0:
@@ -384,13 +402,14 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False):
                         if shares >= 1: show_card = True
             
             if show_card:
+                # Record in memory ONLY for Auto-Scan purposes (but we record it now)
+                if not manual_mode:
+                    context.user_data['auto_mem']['tickers'].append(t)
+                
                 info = get_extended_info(t)
                 risk_per_share = d['P'] - d['SL']
                 shares = int(p['risk_usd'] / risk_per_share) if risk_per_share > 0 else 0
-                
-                # PASSING SMA LENGTH HERE
                 card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'], p['sma'])
-                
                 await context.bot.send_message(chat_id=chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
                 results_found += 1
                 
@@ -438,7 +457,10 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def safe_get_params(context):
     if 'params' not in context.user_data: context.user_data['params'] = DEFAULT_PARAMS.copy()
-    return context.user_data['params']
+    p = context.user_data['params']
+    # Ensure new keys exist if user has old data
+    if 'auto_scan' not in p: p['auto_scan'] = False
+    return p
 
 # --- KEYBOARDS ---
 def get_main_keyboard(p):
@@ -448,10 +470,14 @@ def get_main_keyboard(p):
     sma = f"📈 SMA: {p['sma']}"
     tf = f"⏳ TIMEFRAME: {p['tf'][0]}"
     new = f"Only New {'✅' if p['new_only'] else '❌'}"
+    # 1️⃣ Auto-Scan Button (Dynamic)
+    auto_status = f"Auto Scan: {'ON 🟢' if p.get('auto_scan') else 'OFF 🔴'}"
+    
     return ReplyKeyboardMarkup([
         [KeyboardButton(risk), KeyboardButton(rr)],
         [KeyboardButton(atr), KeyboardButton(sma)],
         [KeyboardButton(tf), KeyboardButton(new)], 
+        [KeyboardButton(auto_status)], # Added Button
         [KeyboardButton("▶️ START SCAN"), KeyboardButton("⏹ STOP SCAN")],
         [KeyboardButton("ℹ️ HELP / INFO")]
     ], resize_keyboard=True)
@@ -526,11 +552,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('scanning'): return await update.message.reply_text("⚠️ Already running!")
         context.user_data['scanning'] = True
         tickers = get_sp500_tickers()
-        asyncio.create_task(run_scan_process(update, context, p, tickers, manual_mode=False))
+        asyncio.create_task(run_scan_process(update, context, p, tickers, manual_mode=True)) # Manual True
         return
     elif text == "⏹ STOP SCAN":
         context.user_data['scanning'] = False
-        return await update.message.reply_text("🛑 Stopping...")
+        p['auto_scan'] = False # 5️⃣ STOP disables Auto
+        context.user_data['params'] = p
+        return await update.message.reply_text("🛑 Stopping all scans...", reply_markup=get_main_keyboard(p))
     elif text == "ℹ️ HELP / INFO":
         help_text = (
             "<b>📚 TECHNICAL MANUAL</b>\n\n"
@@ -545,6 +573,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return await update.message.reply_html(help_text)
     
+    elif "Auto Scan:" in text: # 1️⃣ Auto-Scan Toggle
+        if p['tf'] == 'Weekly':
+            await update.message.reply_text("⚠️ Auto-Scan is NOT available in Weekly timeframe.\nSwitch to Daily first.", reply_markup=get_main_keyboard(p))
+            return
+        
+        p['auto_scan'] = not p.get('auto_scan', False)
+        status = "ON 🟢" if p['auto_scan'] else "OFF 🔴"
+        context.user_data['params'] = p
+        await update.message.reply_text(f"🔄 Auto-Scan: {status}", reply_markup=get_main_keyboard(p))
+        return
+
     elif "SMA:" in text:
         context.user_data['input_mode'] = "sma_select"
         await update.message.reply_text("Select SMA Length:", reply_markup=get_sma_keyboard())
@@ -561,8 +600,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ SMA set to {p['sma']}", reply_markup=get_main_keyboard(p))
         return
     if context.user_data.get('input_mode') == "tf_select":
-        if "Daily" in text: p['tf'] = "Daily"
-        elif "Weekly" in text: p['tf'] = "Weekly"
+        if "Daily" in text: 
+            p['tf'] = "Daily"
+        elif "Weekly" in text: 
+            p['tf'] = "Weekly"
+            p['auto_scan'] = False # Disable Auto on Weekly
+            
         context.user_data['input_mode'] = None
         await update.message.reply_text(f"✅ Timeframe set to {p['tf']}", reply_markup=get_main_keyboard(p))
         return
@@ -624,8 +667,53 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Config: Risk ${p['risk_usd']} | {p['tf']}", reply_markup=get_main_keyboard(p))
 
 # ==========================================
-# 7. ARCHITECTURE: SINGLETON BOT
+# 7. ARCHITECTURE: SINGLETON BOT + SCHEDULER
 # ==========================================
+# 2️⃣ AUTO SCAN SCHEDULER TASK
+async def auto_scan_scheduler(app):
+    """
+    Runs Daily Auto-Scan during US Market Hours (09:35 - 15:35 ET)
+    Checks every 10 seconds. Triggers only at minute 35.
+    """
+    while True:
+        try:
+            ny_tz = pytz.timezone('US/Eastern')
+            now = datetime.datetime.now(ny_tz)
+            
+            # Check Weekday (0-4) and Market Hours (09:35 - 15:35)
+            is_market_day = now.weekday() < 5
+            is_scan_time = (9 <= now.hour <= 15) and (now.minute == 35)
+            
+            # Special case for 9 AM: Must be >= 09:35
+            if now.hour == 9 and now.minute < 35: is_scan_time = False
+            
+            if is_market_day and is_scan_time:
+                # Trigger Scan for all users with Auto-Scan ON
+                if hasattr(app, 'user_data') and app.user_data:
+                    tickers = get_sp500_tickers()
+                    
+                    for uid in list(app.user_data.keys()):
+                        ud = app.user_data[uid]
+                        p = ud.get('params', DEFAULT_PARAMS)
+                        
+                        if p.get('auto_scan') and p.get('tf') == 'Daily':
+                            # Construct Dummy Objects
+                            class DummyObj: pass
+                            u_upd = DummyObj(); u_upd.effective_chat = DummyObj(); u_upd.effective_chat.id = uid
+                            u_ctx = DummyObj(); u_ctx.bot = app.bot; u_ctx.user_data = ud
+                            
+                            ud['scanning'] = True # Enable scan flag
+                            asyncio.create_task(run_scan_process(u_upd, u_ctx, p, tickers, manual_mode=False))
+                
+                # Sleep 60s to prevent double trigger in same minute
+                await asyncio.sleep(60)
+            
+            await asyncio.sleep(10) # Tick
+            
+        except Exception as e:
+            print(f"Scheduler Error: {e}")
+            await asyncio.sleep(60)
+
 @st.cache_resource
 def get_bot_app():
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
@@ -640,6 +728,7 @@ def run_bot_in_background(app):
     asyncio.set_event_loop(loop)
     try:
         if not app.updater or not app.updater.running:
+            loop.create_task(auto_scan_scheduler(app)) # Inject Scheduler
             app.run_polling(stop_signals=None, close_loop=False)
     except Exception as e:
         print(f"Bot thread error: {e}")
