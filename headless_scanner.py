@@ -50,7 +50,10 @@ try:
     TG_TOKEN = st.secrets["TG_TOKEN"].strip()
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
     GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "").strip()
-    print(f"✅ Loaded Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID}")
+    # NEW: Load Channel ID
+    CHANNEL_ID = st.secrets.get("CHANNEL_ID", None)
+    if CHANNEL_ID: CHANNEL_ID = int(CHANNEL_ID)
+    print(f"✅ Loaded Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID} | Channel: {CHANNEL_ID}")
 except Exception as e:
     st.error(f"❌ Secret Error: {e}")
     st.stop()
