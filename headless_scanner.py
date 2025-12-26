@@ -1002,7 +1002,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Формат: "действие|юзер|канал"
     callback_data = f"agree|{user_id}|{chat_id}"
     
-   terms_text = (
+    terms_text = (
         "⚖️ <b>LEGAL DISCLAIMER & TERMS OF SERVICE</b>\n\n"
         "By requesting access to this channel, you acknowledge and agree to the following legally binding terms:\n\n"
         
