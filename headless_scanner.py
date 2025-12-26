@@ -624,6 +624,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['input_mode'] = None
         await update.message.reply_text("🔙 Main Menu", reply_markup=get_main_keyboard(p))
         return
+
     # 🔴 KEY FIX: START SCAN IS NOW MANUAL_MODE=FALSE (FILTERED)
     if text == "▶️ START SCAN":
         if context.user_data.get('scanning'): return await update.message.reply_text("⚠️ Already running!")
@@ -631,12 +632,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tickers = get_sp500_tickers()
         asyncio.create_task(run_scan_process(update, context, p, tickers, manual_mode=False, is_auto=False)) 
         return
+
     elif text == "⏹ STOP SCAN":
         context.user_data['scanning'] = False
         p['auto_scan'] = False 
         context.user_data['params'] = p
         return await update.message.reply_text("🛑 Stopping all scans...", reply_markup=get_main_keyboard(p))
-     elif text == "ℹ️ HELP / INFO":
+
+    elif text == "ℹ️ HELP / INFO":
         help_text = (
             "<b>📚 VOVA SCREENER TECHNICAL MANUAL</b>\n"
             "<i>Operational Guide & Logic Definitions</i>\n\n"
@@ -799,7 +802,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['params'] = p
     await update.message.reply_text(f"Config: Risk ${p['risk_usd']} | {p['tf']}", reply_markup=get_main_keyboard(p))
-
 # ==========================================
 # 7. ARCHITECTURE: SINGLETON BOT + SCHEDULER
 # ==========================================
