@@ -69,7 +69,6 @@ DEFAULT_PARAMS = {
     'sma': 200,
     'tf': 'Daily',
     'new_only': True,
-    'auto_scan': False, 
 }
 
 # ==========================================
@@ -453,7 +452,6 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def safe_get_params(context):
     if 'params' not in context.user_data: context.user_data['params'] = DEFAULT_PARAMS.copy()
     p = context.user_data['params']
-    if 'auto_scan' not in p: p['auto_scan'] = False
     return p
 
 # --- KEYBOARDS ---
@@ -784,28 +782,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 7. ARCHITECTURE: SINGLETON BOT + SCHEDULER
 # ==========================================
 async def auto_scan_scheduler(app):
-    print("⏳ Scheduler started... (Mode: Channel Only)")
+    print("⏳ Scheduler started... (Target: 15:00 ET)")
     while True:
         try:
             ny_tz = pytz.timezone('US/Eastern')
             now = datetime.datetime.now(ny_tz)
             
-            is_market_day = now.weekday() < 5 # Mon-Fri
+            is_market_day = now.weekday() < 5 # Monday(0) to Friday(4)
             
-            # TRIGGER TIME: 09:45 AM NY TIME
-            is_scan_time = (now.hour == 9 and now.minute == 45)
+            # ✅ TRIGGER TIME: 15:00 (3:00 PM) Eastern Time
+            # This logic ensures it runs ONLY at 3 PM, not every hour.
+            is_scan_time = (now.hour == 15 and now.minute == 0)
             
             if is_market_day and is_scan_time:
                 print("🚀 Auto-Scan Triggered for CHANNEL!")
                 
-                # --- YOUR REQUESTED HARDCODED SETTINGS ---
+                # --- CHANNEL SETTINGS ---
                 channel_params = {
-                    'risk_usd': 100.0,   # Fixed Risk
-                    'min_rr': 1.5,       # Fixed RR
-                    'max_atr': 5.0,      # Fixed Max ATR
-                    'sma': 200,          # Fixed SMA
+                    'risk_usd': 100.0,   
+                    'min_rr': 1.5,       
+                    'max_atr': 5.0,      
+                    'sma': 200,          
                     'tf': 'Daily',
-                    'new_only': True,    # Only fresh signals
+                    
+                    # ✅ THIS ENSURES ONLY FRESH SIGNALS ARE SENT
+                    'new_only': True,    
+                    
                     'auto_scan': True
                 }
                 
@@ -820,9 +822,10 @@ async def auto_scan_scheduler(app):
                 # Run Scan -> Directly to Channel
                 asyncio.create_task(run_scan_process(u_upd, u_ctx, channel_params, tickers, manual_mode=False, is_auto=True))
                 
-                # Sleep 61s to prevent double launch
+                # ✅ SLEEP 61s: This guarantees the bot won't trigger twice in the same minute
                 await asyncio.sleep(61)
             
+            # Check the clock every 30 seconds
             await asyncio.sleep(30)
             
         except Exception as e:
