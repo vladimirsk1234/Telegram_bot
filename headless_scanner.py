@@ -502,6 +502,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['input_mode'] = None
     
+    # Auto-scan trigger via command argument
     if context.args and context.args[0] == 'autoscan':
         await update.message.reply_text("🚀 <b>Auto-starting Scan...</b>", parse_mode='HTML')
         context.user_data['scanning'] = True
@@ -510,25 +511,98 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_name = update.effective_user.first_name
-    adx_val = globals().get('ADX_T', 20)
     
-    welcome_text = f"""👋 <b>Welcome, {user_name}!</b>
+    # We access global constants for the description
+    # Ensure ADX_T, SMA_MAJ (or default 200) are defined in your GLOBAL SETTINGS if not already.
+    
+    welcome_text = f"""👋 <b>Welcome to the Vova Sequence Screener, {user_name}!</b>
 
-🤖 <b>I am the Vova Sequence Screener.</b>
-I automate the analysis of S&P 500 stocks using a strict quantitative strategy based on Market Structure and Momentum.
+I am a specialized quantitative trading assistant designed to automate the technical analysis of <b>S&P 500</b> equities. I operate as a <b>Long-Only</b> system, using a strict, rule-based algorithm to identify high-probability setups based on Market Structure, Momentum, and Volatility.
 
-<b>🧩 STRATEGY LOGIC:</b>
-<b>1. Macro Trend:</b> I only look for Longs when price is ABOVE the <b>SMA {p['sma']}</b>.
-<b>2. Momentum:</b> I use the <b>Elder Impulse System</b> (EMA + MACD) to confirm Bullish momentum (Green Bars).
-<b>3. Trend Strength:</b> <b>ADX</b> must be > {ADX_T} to ensure the trend is strong enough.
-<b>4. Structure Shift:</b> I identify a valid Break of Structure (New Higher High after a Higher Low) to trigger a signal.
+━━━━━━━━━━━━━━━━━━
+<b>🧩 STRATEGY LOGIC & FORMULAS</b>
+My decision engine requires <b>ALL</b> of the following conditions to be met simultaneously:
 
-<b>🛡️ RISK MANAGEMENT:</b>
-• <b>ATR Filter:</b> I reject stocks with dangerous volatility (> {p['max_atr']}%).
-• <b>R/R Ratio:</b> I calculate the Risk/Reward based on the structural Stop Loss. Trades below <b>{p['min_rr']}R</b> are skipped.
-• <b>Position Sizing:</b> I calculate exactly how many shares to buy based on your <b>${p['risk_usd']}</b> risk setting.
+<b>1. Macro Trend Filter</b>
+I filter out any stock trading in a downtrend.
+• <b>Logic:</b> <code>Current Price > Simple Moving Average (SMA)</code>
+• <b>Current Setting:</b> SMA {p['sma']}
 
-<i>👇 Use the menu below to configure parameters and Start Scan.</i>"""
+<b>2. Momentum (Elder Impulse System)</b>
+I confirm bullish momentum using a composite of EMAs and MACD.
+• <b>EMA Stack:</b> Fast EMA ({EMA_F}) AND Slow EMA ({EMA_S}) must both be rising.
+• <b>MACD:</b> The MACD Histogram (12, 26, 9) must be rising (ticking up).
+• <b>Elder Force Index (EFI):</b> <code>EMA(Close Change * Volume, {EMA_F})</code> must be > 0.
+
+<b>3. Trend Strength (ADX)</b>
+I ensure the trend is strong enough to trade.
+• <b>Formula:</b> Wilder’s Smoothing (RMA) over {ADX_L} periods.
+• <b>Condition:</b> <code>ADX ≥ {ADX_T}</code> AND <code>DI+ > DI-</code> (Bulls > Bears).
+
+<b>4. Market Structure Shift</b>
+I do not use standard indicators for entry. I use a custom <b>Sequence Engine</b>.
+• <b>Logic:</b> I map Swing Highs and Swing Lows algorithmically.
+• <b>Trigger:</b> A <b>Break of Structure (BoS)</b> occurs when <code>Close > Previous Swing High</code>.
+• <b>Validation:</b> The structure must confirm a <b>Higher High (HH)</b> following a confirmed <b>Higher Low (HL)</b>.
+
+━━━━━━━━━━━━━━━━━━
+<b>🛡️ RISK MANAGEMENT</b>
+I prioritize capital preservation over signal frequency.
+
+<b>1. Volatility Filter (ATR)</b>
+• <b>Formula:</b> {ATR_L}-period Average True Range.
+• <b>Logic:</b> <code>(ATR / Price) * 100</code> must be ≤ <b>{p['max_atr']}%</b>.
+• <i>Stocks moving more than this daily are rejected.</i>
+
+<b>2. Stop Loss (SL) Calculation</b>
+I calculate two stops and select the <b>tighter (higher)</b> one to minimize risk:
+• <b>Structural SL:</b> The price of the most recent Swing Low.
+• <b>Volatility SL:</b> <code>Price - (1 * ATR)</code>.
+• <b>Final SL:</b> <code>MAX(Structural SL, Volatility SL)</code>.
+
+<b>3. Position Sizing</b>
+I calculate the exact share size based on your dollar risk.
+• <b>Risk Per Share:</b> <code>Entry Price - Stop Loss</code>.
+• <b>Shares:</b> <code>Floor( ${p['risk_usd']} / Risk_Per_Share )</code>.
+
+<b>4. Risk/Reward (RR) Ratio</b>
+• <b>Target:</b> Previous Swing High Peak.
+• <b>Formula:</b> <code>(Target - Entry) / (Entry - SL)</code>.
+• <i>Trades below <b>{p['min_rr']}R</b> are skipped.</i>
+
+━━━━━━━━━━━━━━━━━━
+<b>📚 HELP MENU & CONTROLS</b>
+Use the buttons below to configure your scan:
+
+• <b>💸 Risk:</b> Set your max dollar loss per trade (Current: ${p['risk_usd']}).
+• <b>⚖️ RR:</b> Set minimum Risk/Reward ratio (Current: {p['min_rr']}).
+• <b>📊 ATR Max:</b> Set max allowable daily volatility % (Current: {p['max_atr']}%).
+• <b>📈 SMA:</b> Toggle Macro Trend filter (100, 150, or 200 periods).
+• <b>⏳ TIMEFRAME:</b> Switch between <b>Daily</b> and <b>Weekly</b> charts.
+• <b>Only New:</b>
+  • ✅: Shows only signals triggered <i>today</i>.
+  • ❌: Shows valid trends triggered previously (recycled).
+• <b>Auto Scan:</b>
+  • <b>ON:</b> Runs M-F, 09:35 - 15:35 ET. Alerts once per ticker/day.
+  • <b>OFF:</b> Stops background scanning.
+• <b>▶️ START SCAN:</b> Immediately scans the full S&P 500 with current settings.
+• <b>⏹ STOP SCAN:</b> Aborts any active scanning process.
+
+🔍 <b>DIAGNOSTIC MODE:</b>
+Type any ticker symbol (e.g., <code>AAPL</code>, <code>NVDA</code>, or <code>TSLA, MSFT</code>) into the chat.
+• I will bypass all filters and show you the full dashboard card.
+• This allows you to see <i>exactly</i> why a stock is passing or failing.
+
+━━━━━━━━━━━━━━━━━━
+⚠️ <b>LEGAL DISCLAIMER</b>
+<b>Please Read Carefully:</b>
+This software is a <b>Quantitative Research Tool</b> provided for <b>informational and educational purposes only</b>. It does <b>not</b> constitute financial, investment, legal, or tax advice.
+1. <b>No Fiduciary Duty:</b> The developers and providers of this bot assume no responsibility for your trading decisions.
+2. <b>Risk of Loss:</b> Trading in financial markets involves a substantial risk of loss. You should only trade with capital you can afford to lose.
+3. <b>Accuracy:</b> Data is sourced via third-party APIs (Yahoo Finance) and may be subject to delays or inaccuracies.
+4. <b>User Responsibility:</b> By using this bot, you agree that you are solely responsible for your own investment decisions and results.
+
+<i>👇 Configure your settings below to begin.</i>"""
 
     await update.message.reply_html(welcome_text, reply_markup=get_main_keyboard(p))
 
