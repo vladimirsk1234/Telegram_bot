@@ -428,10 +428,15 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
         context.bot_data['channel_mem'] = {'date': today_str, 'tickers': []}
 
     # --- PROGRESS BAR SETUP (ENABLED FOR ALL) ---
-    # Create a display string
+    # Create a display string with FULL PARAMETERS
     config_display = (
-        f"⚙️ <b>Settings:</b> "
-        f"Risk ${p['risk_usd']:.0f} | SMA {p['sma']} | {p['tf']}"
+        f"⚙️ <b>Active Settings:</b>\n"
+        f"💰 Risk: <b>${p['risk_usd']:.0f}</b>\n"
+        f"⚖️ Min RR: <b>{p['min_rr']}</b>\n"
+        f"📊 Max ATR: <b>{p['max_atr']}%</b>\n"
+        f"📈 SMA Filter: <b>{p['sma']}</b>\n"
+        f"⏳ Timeframe: <b>{p['tf']}</b>\n"
+        f"🆕 Fresh Only: <b>{'✅' if p['new_only'] else '❌'}</b>"
     )
     
     scan_type = "🤖 AUTO" if is_auto else "👤 MANUAL"
