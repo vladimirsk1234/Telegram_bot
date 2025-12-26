@@ -319,30 +319,13 @@ def analyze_trade(df, idx):
     return valid, data, errs
 
 # ==========================================
-# 4. UI: DASHBOARD STYLE (MODIFIED)
+# 4. UI: DASHBOARD STYLE (FIXED FOR CHANNEL)
 # ==========================================
-# Updated with 'public_view' argument
 def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len, public_view=False):
     tv_ticker = ticker.replace('-', '.')
     tv_link = f"https://www.tradingview.com/chart/?symbol={tv_ticker}"
     
-    # --- MODIFICATION: PUBLIC VIEW (SIMPLE) ---
-    if public_view:
-        # Simple Card for Channel
-        trend_icon = "📈 LONG" if d['Trend'] == 1 else "📉 SHORT"
-        
-        html = (
-            f"<b>{trend_icon}: <a href='{tv_link}'>{ticker}</a></b>\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"🛒 <b>Entry:</b> {d['P']:.2f}\n\n"
-            f"🎯 <b>TP:</b> {d['TP']:.2f}\n"
-            f"🛑 <b>SL:</b> {d['SL']:.2f}\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"⚖️ <b>R/R:</b> {d['RR']:.2f}R"
-        )
-        return html
-
-    # --- PRIVATE VIEW (ORIGINAL DETAILED) ---
+    # --- SHARED VISUALS (CALCULATE FOR BOTH) ---
     pe_str = str(info.get('pe', 'N/A'))
     mc_str = str(info.get('mc', 'N/A'))
     atr_pct = (d['ATR'] / d['Close']) * 100
@@ -350,48 +333,70 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len, publ
     trend_emo = "🟢" if d['Trend'] == 1 else ("🔴" if d['Trend'] == -1 else "🟡")
     seq_emo = "🟢" if d['Seq'] == 1 else ("🔴" if d['Seq'] == -1 else "🟡")
     ma_emo = "🟢" if d['Close'] > d['SMA'] else "🔴"
-    
-    cond_seq = d['Seq'] == 1
-    cond_ma = d['Close'] > d['SMA']
-    cond_trend = d['Trend'] != -1
-    cond_struct = d.get('Struct', False)
-    
-    is_valid_setup = cond_seq and cond_ma and cond_trend and cond_struct
-    risk = d['P'] - d['SL']
-    reward = d['TP'] - d['P']
-    is_valid_math = risk > 0 and reward > 0
+    status_icon = "🆕" if is_new else "♻️"
 
+    # Header is same for both
     header = f"<b><a href='{tv_link}'>{ticker}</a></b>  ${d['P']:.2f}\n"
     
+    # Context Block (Indicators) is same for both
     context_block = (
         f"MC: {mc_str} | P/E: {pe_str}\n"
         f"ATR: ${d['ATR']:.2f} ({atr_pct:.2f}%)\n"
         f"Trend {trend_emo}  Seq {seq_emo}  MA{sma_len} {ma_emo}\n"
     )
 
+    # Check validity
+    cond_seq = d['Seq'] == 1
+    cond_ma = d['Close'] > d['SMA']
+    cond_trend = d['Trend'] != -1
+    cond_struct = d.get('Struct', False)
+    is_valid_setup = cond_seq and cond_ma and cond_trend and cond_struct
+    risk = d['P'] - d['SL']
+    reward = d['TP'] - d['P']
+    is_valid_math = risk > 0 and reward > 0
+
     if is_valid_setup and is_valid_math:
-        status_icon = "🆕" if is_new else "♻️"
         rr_str = f"{d['RR']:.2f}"
         
-        # FULL VERSION (With Money Management)
-        profit = reward * shares
-        loss = risk * shares
-        total_val = shares * d['P']
-        
-        size_line = f"Size: {shares} shares (${total_val:,.0f})\n"
-        sl_line = f"🛑 SL: {d['SL']:.2f}  (-${loss:.0f})\n"
-        tp_line = f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
+        # ---------------------------------------------------------
+        # 1. PUBLIC VIEW (CHANNEL) - CLEAN VERSION
+        # ---------------------------------------------------------
+        if public_view:
+            # Same visuals, but NO shares and NO dollar values
+            html = (
+                f"{status_icon} {header}"
+                # Size line removed
+                f"{context_block}"
+                f"🛑 SL: {d['SL']:.2f}\n"  # Removed (-$Loss)
+                f"🎯 TP: {d['TP']:.2f}\n"  # Removed (+$Profit)
+                f"⚖️ Risk/Reward: {rr_str}"
+            )
+            return html
 
-        html = (
-            f"{status_icon} {header}"
-            f"{size_line}"
-            f"{context_block}"
-            f"{sl_line}"
-            f"{tp_line}"
-            f"⚖️ Risk/Reward: {rr_str}"
-        )
+        # ---------------------------------------------------------
+        # 2. PRIVATE VIEW (BOT) - FULL MONEY MANAGEMENT
+        # ---------------------------------------------------------
+        else:
+            profit = reward * shares
+            loss = risk * shares
+            total_val = shares * d['P']
+            
+            size_line = f"Size: <b>{shares}</b> shares (${total_val:,.0f})\n"
+            sl_line = f"🛑 SL: {d['SL']:.2f}  (-${loss:.0f})\n"
+            tp_line = f"🎯 TP: {d['TP']:.2f}  (+${profit:.0f})\n"
+
+            html = (
+                f"{status_icon} {header}"
+                f"{size_line}"
+                f"{context_block}"
+                f"{sl_line}"
+                f"{tp_line}"
+                f"⚖️ Risk/Reward: {rr_str}"
+            )
+            return html
+            
     else:
-        # Error logic remains the same
+        # Error logic (Same for both)
         reasons = []
         if not cond_seq: reasons.append("Seq❌")
         if not cond_ma: reasons.append("MA❌")
@@ -402,9 +407,7 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len, publ
 
         fail_str = " ".join(reasons) if reasons else "UNKNOWN ERROR"
         html = f"⛔ {header}{context_block}<b>NO SETUP:</b> {fail_str}"
-    
-    return html
-
+        return html
 # ==========================================
 # 5. SCANNING PROCESS (UPDATED: PROGRESS FOR AUTO)
 # ==========================================
