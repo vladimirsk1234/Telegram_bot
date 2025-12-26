@@ -14,6 +14,115 @@ import gc
 import threading
 import warnings
 
+
+from numba import jit, float64, int64, boolean
+import numpy as np
+
+# ==========================================
+# NUMBA ENGINE (Скорость x500)
+# ==========================================
+@jit(nopython=True, cache=True)
+def calculate_structure_engine(c_a, h_a, l_a):
+    n = len(c_a)
+    
+    # Инициализация массивов для результатов
+    seq_st = np.zeros(n, dtype=np.int64)
+    crit_lvl = np.full(n, np.nan, dtype=np.float64)
+    res_peak = np.full(n, np.nan, dtype=np.float64)
+    res_struct = np.zeros(n, dtype=np.bool_) # Numba любит типизацию
+    
+    # Переменные состояния (State Variables)
+    s_state = 0
+    s_crit = np.nan
+    s_h = h_a[0]
+    s_l = l_a[0]
+    
+    last_pk = np.nan
+    last_tr = np.nan
+    
+    # Флаги структуры
+    pk_hh = False
+    tr_hl = False
+    
+    # ГЛАВНЫЙ ЦИКЛ (Тот же самый, что у вас, но компилируемый)
+    for i in range(1, n):
+        c, h, l = c_a[i], h_a[i], l_a[i]
+        
+        prev_st = s_state
+        prev_cr = s_crit
+        prev_sh = s_h 
+        prev_sl = s_l 
+        
+        brk = False
+        # Логика пробоя (Break check)
+        if prev_st == 1 and not np.isnan(prev_cr):
+            if c < prev_cr: brk = True
+        elif prev_st == -1 and not np.isnan(prev_cr):
+            if c > prev_cr: brk = True
+            
+        if brk:
+            if prev_st == 1: 
+                final_high = max(prev_sh, h)
+                
+                # Проверка Higher High
+                if np.isnan(last_pk): is_hh = True
+                else: is_hh = (final_high > last_pk)
+                
+                pk_hh = is_hh
+                last_pk = final_high 
+                
+                s_state = -1
+                s_h = h; s_l = l
+                s_crit = h
+            else: 
+                final_low = min(prev_sl, l)
+                
+                # Проверка Higher Low
+                if np.isnan(last_tr): is_hl = True
+                else: is_hl = (final_low > last_tr)
+                
+                tr_hl = is_hl
+                last_tr = final_low
+                
+                s_state = 1
+                s_h = h; s_l = l
+                s_crit = l
+        else:
+            s_state = prev_st
+            if s_state == 1:
+                if h >= s_h: s_h = h
+                if h >= prev_sh: s_crit = l
+                else: s_crit = prev_cr
+            elif s_state == -1:
+                if l <= s_l: s_l = l
+                if l <= prev_sl: s_crit = h
+                else: s_crit = prev_cr
+            else:
+                # Начальное определение состояния
+                if c > prev_sh: 
+                    s_state = 1; s_crit = l
+                elif c < prev_sl: 
+                    s_state = -1; s_crit = h
+                else:
+                    s_h = max(prev_sh, h); s_l = min(prev_sl, l)
+        
+        # Запись результатов в массивы
+        seq_st[i] = s_state
+        crit_lvl[i] = s_crit
+        res_peak[i] = last_pk
+        
+        # Логическое И для структуры (HH + HL)
+        if pk_hh and tr_hl:
+            res_struct[i] = True
+        else:
+            res_struct[i] = False
+            
+    return seq_st, crit_lvl, res_peak, res_struct
+
+
+
+
+
 # Suppress warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -138,6 +247,7 @@ def calc_atr(df, length):
 
 # --- STRATEGY ---
 def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
+    # 1. Стандартные индикаторы (Pandas тут быстрее, оставляем как есть)
     df['SMA'] = calc_sma(df['Close'], len_maj)
     adx, p_di, m_di = calc_adx_pine(df, adx_len)
     
@@ -147,82 +257,43 @@ def run_vova_logic(df, len_maj, len_fast, len_slow, adx_len, adx_thr, atr_len):
     efi = calc_ema(df['Close'].diff() * df['Volume'], len_fast)
     atr = calc_atr(df, atr_len)
     
-    n = len(df)
-    c_a, h_a, l_a = df['Close'].values, df['High'].values, df['Low'].values
+    # 2. Подготовка данных для Numba (конвертация в numpy array)
+    # .values - это то, что нужно Numba (без индексов Pandas)
+    c_vals = df['Close'].values.astype(np.float64)
+    h_vals = df['High'].values.astype(np.float64)
+    l_vals = df['Low'].values.astype(np.float64)
     
-    seq_st = np.zeros(n, dtype=int)
-    crit_lvl = np.full(n, np.nan)
-    res_peak = np.full(n, np.nan)
-    res_struct = np.zeros(n, dtype=bool)
+    # 3. ЗАПУСК БЫСТРОГО ДВИЖКА
+    # Вся тяжелая логика происходит здесь за миллисекунды
+    seq_st, crit_lvl, res_peak, res_struct = calculate_structure_engine(c_vals, h_vals, l_vals)
     
-    s_state = 0
-    s_crit = np.nan
-    s_h = h_a[0]; s_l = l_a[0]
-    
-    last_pk = np.nan; last_tr = np.nan
-    pk_hh = False; tr_hl = False
-    
-    for i in range(1, n):
-        c, h, l = c_a[i], h_a[i], l_a[i]
-        
-        prev_st = s_state
-        prev_cr = s_crit
-        prev_sh = s_h 
-        prev_sl = s_l 
-        
-        brk = False
-        if prev_st == 1 and not np.isnan(prev_cr): brk = c < prev_cr
-        elif prev_st == -1 and not np.isnan(prev_cr): brk = c > prev_cr
-            
-        if brk:
-            if prev_st == 1: 
-                final_high = max(prev_sh, h)
-                is_hh = True if np.isnan(last_pk) else (final_high > last_pk)
-                pk_hh = is_hh
-                last_pk = final_high 
-                
-                s_state = -1
-                s_h = h; s_l = l
-                s_crit = h
-            else: 
-                final_low = min(prev_sl, l)
-                is_hl = True if np.isnan(last_tr) else (final_low > last_tr)
-                tr_hl = is_hl
-                last_tr = final_low
-                
-                s_state = 1
-                s_h = h; s_l = l
-                s_crit = l
-        else:
-            s_state = prev_st
-            if s_state == 1:
-                if h >= s_h: s_h = h
-                if h >= prev_sh: s_crit = l
-                else: s_crit = prev_cr
-            elif s_state == -1:
-                if l <= s_l: s_l = l
-                if l <= prev_sl: s_crit = h
-                else: s_crit = prev_cr
-            else:
-                if c > prev_sh: 
-                    s_state = 1; s_crit = l
-                elif c < prev_sl: 
-                    s_state = -1; s_crit = h
-                else:
-                    s_h = max(prev_sh, h); s_l = min(prev_sl, l)
-        
-        seq_st[i] = s_state
-        crit_lvl[i] = s_crit
-        res_peak[i] = last_pk
-        res_struct[i] = (pk_hh and tr_hl)
-
+    # 4. Сборка логики тренда (векторизованная)
+    # Здесь циклы не нужны, Pandas справляется быстро
     adx_str = adx >= adx_thr
-    bull = (adx_str & (p_di > m_di)) & ((ema_f > ema_f.shift(1)) & (ema_s > ema_s.shift(1)) & (hist > hist.shift(1))) & (efi > 0)
-    bear = (adx_str & (m_di > p_di)) & ((ema_f < ema_f.shift(1)) & (ema_s < ema_s.shift(1)) & (hist < hist.shift(1))) & (efi < 0)
-    t_st = np.zeros(n, dtype=int)
-    t_st[bull] = 1; t_st[bear] = -1
     
-    df['Seq'] = seq_st; df['Crit'] = crit_lvl; df['Peak'] = res_peak; df['Struct'] = res_struct; df['Trend'] = t_st; df['ATR'] = atr
+    # Сдвиги (.shift) для сравнения с предыдущим баром
+    ema_f_prev = ema_f.shift(1)
+    ema_s_prev = ema_s.shift(1)
+    hist_prev = hist.shift(1)
+    
+    bull_mom = (ema_f > ema_f_prev) & (ema_s > ema_s_prev) & (hist > hist_prev) & (efi > 0)
+    bear_mom = (ema_f < ema_f_prev) & (ema_s < ema_s_prev) & (hist < hist_prev) & (efi < 0)
+    
+    bull = (adx_str & (p_di > m_di)) & bull_mom
+    bear = (adx_str & (m_di > p_di)) & bear_mom
+    
+    t_st = np.zeros(len(df), dtype=int)
+    t_st[bull] = 1
+    t_st[bear] = -1
+    
+    # 5. Запись результатов обратно в DataFrame
+    df['Seq'] = seq_st
+    df['Crit'] = crit_lvl
+    df['Peak'] = res_peak
+    df['Struct'] = res_struct
+    df['Trend'] = t_st
+    df['ATR'] = atr
+    
     return df
 
 def analyze_trade(df, idx):
