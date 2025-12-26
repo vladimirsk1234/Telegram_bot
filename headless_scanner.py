@@ -347,7 +347,7 @@ async def run_scan_internal(app, chat_id, p, tickers, manual_mode=False, auto_mo
             )
         except: pass
         
-        # Initialize flag if missing
+        # --- FIX: Ensure scanning flag is set in APP data (for stop button) ---
         if chat_id not in app.user_data: app.user_data[chat_id] = {}
         app.user_data[chat_id]['scanning'] = True
 
@@ -355,12 +355,13 @@ async def run_scan_internal(app, chat_id, p, tickers, manual_mode=False, auto_mo
     total = len(tickers)
     
     for i, t in enumerate(tickers):
-        # --- STOP SCAN FIX ---
-        # We must re-check the 'scanning' flag from the application state every iteration
+        # --- FIX: STOP SCAN LOGIC ---
+        # Direct lookup in application.user_data to see live updates from 'handle_message'
         if not auto_mode:
-            # Refresh user data reference
-            current_user_data = app.user_data.get(chat_id, {})
-            if not current_user_data.get('scanning', True):
+            live_user_data = app.user_data.get(chat_id, {})
+            is_scanning = live_user_data.get('scanning', True)
+            
+            if not is_scanning:
                 try:
                     await app.bot.send_message(chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
                 except: pass
@@ -415,6 +416,9 @@ async def run_scan_internal(app, chat_id, p, tickers, manual_mode=False, auto_mo
                 if auto_mode:
                     seen_today.add(t)
                     app.bot_data['seen_signals'][time_key] = seen_today
+                    # Trigger save for bot_data
+                    try: await app.persistence.flush() 
+                    except: pass
 
                 info = get_extended_info(t)
                 risk_per_share = d['P'] - d['SL']
@@ -508,27 +512,29 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data['active_users'].add(user_id)
     return True
 
-# --- MEMORY/PERSISTENCE FIX ---
-async def safe_get_params(context):
-    # 1. Load from persistence if available
+# --- FIX: ROBUST SETTINGS SAVER ---
+async def save_settings(context):
+    # 1. Ensure keys exist (Soft Merge)
     if 'params' not in context.user_data:
         context.user_data['params'] = DEFAULT_PARAMS.copy()
     
-    # 2. Soft Merge: Keep USER values, only add missing defaults
     current = context.user_data['params']
     changed = False
     for k, v in DEFAULT_PARAMS.items():
         if k not in current:
             current[k] = v
             changed = True
-    
-    # 3. Explicit write-back to ensure persistence catches it
     if changed:
         context.user_data['params'] = current
-        
+
+    # 2. FORCE FLUSH to disk
+    try:
+        await context.application.persistence.flush()
+    except Exception as e:
+        print(f"Error saving persistence: {e}")
+    
     return current
 
-# --- RESTORED ORIGINAL UI ---
 def get_main_keyboard(p, auto_active=False):
     risk = f"💸 Risk: ${p['risk_usd']:.0f}"
     rr = f"⚖️ RR: {p['min_rr']}"
@@ -537,7 +543,6 @@ def get_main_keyboard(p, auto_active=False):
     tf = f"⏳ TIMEFRAME: {p['tf'][0]}"
     new = f"Only New {'✅' if p['new_only'] else '❌'}"
     
-    # Minimal Auto Indicator
     auto_status = "ON" if auto_active else "OFF"
     auto_btn = f"🤖 Auto: {auto_status}"
     
@@ -557,7 +562,7 @@ def get_tf_keyboard():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
-    p = await safe_get_params(context)
+    p = await save_settings(context)
 
     context.user_data['input_mode'] = None
     
@@ -572,7 +577,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     adx_val = globals().get('ADX_T', 20)
     auto_active = context.bot_data.get('auto_scan_active', False)
     
-    # RESTORED EXACT ORIGINAL TEXT
     welcome_text = f"""👋 <b>Welcome, {user_name}!</b>
 
 🤖 <b>I am the Vova Sequence Screener.</b>
@@ -605,7 +609,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context): return
     text = update.message.text
-    p = await safe_get_params(context)
+    p = await save_settings(context)
     auto_active = context.bot_data.get('auto_scan_active', False)
     
     if text == "🔙 Back":
@@ -613,11 +617,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔙 Main Menu", reply_markup=get_main_keyboard(p, auto_active))
         return
     
-    # --- AUTO TOGGLE LOGIC ---
     if "🤖 Auto:" in text:
         current_state = context.bot_data.get('auto_scan_active', False)
         new_state = not current_state
         context.bot_data['auto_scan_active'] = new_state
+        await save_settings(context) # Flush change
         
         status_text = "✅ <b>Auto Scan ENABLED</b>" if new_state else "❌ <b>Auto Scan DISABLED</b>"
         await update.message.reply_html(status_text, reply_markup=get_main_keyboard(p, new_state))
@@ -630,12 +634,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await run_scan_process(update, context, p, tickers, manual_mode=False)
         return
     elif text == "⏹ STOP SCAN":
-        # Explicitly set flag in context
+        # --- FIX: Force update both locally and globally ---
         context.user_data['scanning'] = False
+        context.application.user_data[update.effective_chat.id]['scanning'] = False
         return await update.message.reply_text("🛑 Stopping...")
     
     elif text == "ℹ️ HELP / INFO":
-        # RESTORED EXACT ORIGINAL TEXT
         help_text = (
             "<b>📚 TECHNICAL MANUAL</b>\n\n"
             "<b>💸 Risk:</b> Dollar amount risked per trade. Used to calculate position size (Shares = Risk / (Entry - SL)).\n\n"
@@ -663,18 +667,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['sma'] = int(text.split()[1])
             context.user_data['input_mode'] = None
             await update.message.reply_text(f"✅ SMA set to {p['sma']}", reply_markup=get_main_keyboard(p, auto_active))
+            await save_settings(context)
         return
     if context.user_data.get('input_mode') == "tf_select":
         if "Daily" in text: p['tf'] = "Daily"
         elif "Weekly" in text: p['tf'] = "Weekly"
         context.user_data['input_mode'] = None
         await update.message.reply_text(f"✅ Timeframe set to {p['tf']}", reply_markup=get_main_keyboard(p, auto_active))
+        await save_settings(context)
         return
 
     if "Only New" in text: 
         p['new_only'] = not p['new_only']
         status = "ENABLED" if p['new_only'] else "DISABLED"
         await update.message.reply_text(f"✅ Only New Signals: {status}", reply_markup=get_main_keyboard(p, auto_active))
+        await save_settings(context)
         return
 
     if "Risk:" in text:
@@ -695,6 +702,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['risk_usd'] = val
             context.user_data['input_mode'] = None
             await update.message.reply_text(f"✅ Risk updated to ${val}", reply_markup=get_main_keyboard(p, auto_active))
+            await save_settings(context)
         except: await update.message.reply_text("❌ Invalid amount.")
         return
     elif mode == "rr":
@@ -704,6 +712,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['min_rr'] = val
             context.user_data['input_mode'] = None
             await update.message.reply_text(f"✅ Min RR updated to {val}", reply_markup=get_main_keyboard(p, auto_active))
+            await save_settings(context)
         except: await update.message.reply_text("❌ Invalid number.")
         return
     elif mode == "atr":
@@ -713,6 +722,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['max_atr'] = val
             context.user_data['input_mode'] = None
             await update.message.reply_text(f"✅ Max ATR updated to {val}%", reply_markup=get_main_keyboard(p, auto_active))
+            await save_settings(context)
         except: await update.message.reply_text("❌ Invalid number.")
         return
 
@@ -732,7 +742,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 @st.cache_resource
 def get_bot_app():
-    my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
+    # --- FIX: Use absolute path to ensure persistence works in Streamlit ---
+    abs_path = os.path.abspath("bot_data.pickle")
+    my_persistence = PicklePersistence(filepath=abs_path, update_interval=1)
+    
     app = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     
     app.add_handler(CommandHandler('start', start))
