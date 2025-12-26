@@ -318,10 +318,9 @@ def format_dashboard_card(ticker, d, shares, is_new, info, p_risk, sma_len):
 # ==========================================
 async def run_scan_process(update, context, p, tickers, manual_mode=False, is_auto=False):
     # Determine user chat for Manual scans
-    # If auto, we don't need a user chat, we use CHANNEL_ID
     private_chat_id = update.effective_chat.id if update.effective_chat else ADMIN_ID
     
-    # --- MEMORY INIT (Reset Daily to avoid duplicate channel posts) ---
+    # --- MEMORY INIT ---
     ny_tz = pytz.timezone('US/Eastern')
     today_str = datetime.datetime.now(ny_tz).strftime('%Y-%m-%d')
     
@@ -330,11 +329,20 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
     if context.bot_data['channel_mem']['date'] != today_str:
         context.bot_data['channel_mem'] = {'date': today_str, 'tickers': []}
 
-    # Notify User (Only in Manual Mode)
+    # --- PROGRESS BAR SETUP (Manual Only) ---
     if not is_auto:
+        # Create a display string of the CURRENT parameters
+        config_display = (
+            f"⚙️ <b>Active Settings:</b>\n"
+            f"Risk: ${p['risk_usd']:.0f} | RR: {p['min_rr']}\n"
+            f"SMA: {p['sma']} | ATR Max: {p['max_atr']}%\n"
+            f"TF: {p['tf']} | New Only: {'✅' if p['new_only'] else '❌'}"
+        )
+        
+        # Send the initial message
         status_msg = await context.bot.send_message(
             chat_id=private_chat_id, 
-            text=f"🔎 <b>Scan Started...</b>", 
+            text=f"🚀 <b>Scan Started...</b>\n\n{config_display}", 
             parse_mode='HTML'
         )
     
@@ -347,9 +355,23 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
             await context.bot.send_message(private_chat_id, "⏹ <b>Scan Stopped.</b>", parse_mode='HTML')
             break
             
-        # Progress Bar (Manual Only)
+        # --- VISUAL PROGRESS BAR UPDATE (Manual Only) ---
+        # Updates every 10 tickers to avoid Telegram limits
         if not is_auto and (i % 10 == 0 or i == total - 1):
-            try: await status_msg.edit_text(f"🔎 Checking: {t} ({i+1}/{total})", parse_mode='HTML')
+            try:
+                # Calculate percentage
+                pct = int((i + 1) / total * 10)
+                # Create bar like [████░░░░░░]
+                bar = "█" * pct + "░" * (10 - pct)
+                percent_num = int((i + 1) / total * 100)
+                
+                await status_msg.edit_text(
+                    f"🔎 <b>Scanning S&P 500...</b>\n"
+                    f"[{bar}] {percent_num}%\n"
+                    f"👉 Checking: <b>{t}</b> ({i+1}/{total})\n\n"
+                    f"{config_display}",
+                    parse_mode='HTML'
+                )
             except: pass
             
         if i % 50 == 0: gc.collect()
@@ -373,9 +395,8 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
             show_card = False
             
             if manual_mode: 
-                show_card = True # Diagnostic always shows
+                show_card = True 
             elif valid:
-                # Apply Filters
                 passes_filters = (d['RR'] >= p['min_rr'] and (d['ATR']/d['P'])*100 <= p['max_atr'])
                 if passes_filters:
                     if p['new_only'] and not is_new: show_card = False
@@ -389,18 +410,15 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
                 
                 card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'], p['sma'])
                 
-                # 1. AUTO SCAN -> DIRECT TO CHANNEL
+                # 1. AUTO SCAN -> CHANNEL
                 if is_auto and CHANNEL_ID:
-                    # Check if we already posted this ticker today
                     if t not in context.bot_data['channel_mem']['tickers']:
-                        # Add Marketing Footer
                         public_card = card + "\n\n💎 <i>Join Premium for Live Alerts!</i>"
-                        
                         await context.bot.send_message(chat_id=CHANNEL_ID, text=public_card, parse_mode='HTML', disable_web_page_preview=True)
                         context.bot_data['channel_mem']['tickers'].append(t)
                         results_found += 1
                         
-                # 2. MANUAL SCAN -> DIRECT TO USER
+                # 2. MANUAL SCAN -> PRIVATE USER
                 elif not is_auto:
                      await context.bot.send_message(chat_id=private_chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
                      results_found += 1
@@ -412,8 +430,7 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
     # Final Report (Manual Only)
     if not is_auto:
         context.user_data['scanning'] = False
-        await context.bot.send_message(private_chat_id, f"✅ Done. Found: {results_found}")
-
+        await context.bot.send_message(private_chat_id, f"✅ <b>Scan Complete.</b>\nFound: {results_found} signals.", parse_mode='HTML')
 # ==========================================
 # 6. BOT HANDLERS & HELPERS
 # ==========================================
