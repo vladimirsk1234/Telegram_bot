@@ -517,7 +517,7 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
                     if t not in context.bot_data['channel_mem']['tickers']:
                         # Public Card for Channel
                         public_card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'], p['sma'], public_view=True)
-                        final_msg = public_card + "\n\n💎 <i>Join Premium for Live Alerts!</i>"
+                       
                         
                         await context.bot.send_message(chat_id=CHANNEL_ID, text=final_msg, parse_mode='HTML', disable_web_page_preview=True)
                         context.bot_data['channel_mem']['tickers'].append(t)
