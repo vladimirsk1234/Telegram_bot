@@ -126,7 +126,9 @@ from telegram import (
     Update, 
     ReplyKeyboardMarkup, 
     KeyboardButton, 
-    constants
+    constants,
+    InlineKeyboardMarkup,   # <--- ДОБАВИТЬ ЭТО (Для кнопок под сообщением)
+    InlineKeyboardButton    # <--- ДОБАВИТЬ ЭТО (Сама кнопка)
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -135,7 +137,9 @@ from telegram.ext import (
     MessageHandler,
     filters,
     PicklePersistence,
-    Application
+    Application,
+    ChatJoinRequestHandler, # <--- ДОБАВИТЬ ЭТО (Ловит заявку в канал)
+    CallbackQueryHandler    # <--- ДОБАВИТЬ ЭТО (Ловит нажатие на кнопку)
 )
 import telegram.error
 
@@ -984,7 +988,76 @@ async def auto_scan_scheduler(app):
         except Exception as e:
             print(f"Scheduler Error: {e}")
             await asyncio.sleep(60)
+
+
+# ==========================================
+# 🆕 NEW: GATEKEEPER LOGIC (JOIN REQUESTS)
+# ==========================================
+async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Получаем ID пользователя и ID канала, куда он стучится
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id 
+    
+    # Сохраняем эти ID в кнопку, чтобы потом знать, кого и куда пускать
+    # Формат: "действие|юзер|канал"
+    callback_data = f"agree|{user_id}|{chat_id}"
+    
+    terms_text = (
+        "🛑 <b>HOLD ON! Legal Disclaimer Required</b>\n\n"
+        "Before you join our Trading Channel, you must accept the following:\n\n"
+        "1. <b>Not Financial Advice:</b> All signals are for educational purposes only.\n"
+        "2. <b>High Risk:</b> Trading involves significant risk. You can lose all your capital.\n"
+        "3. <b>Liability:</b> We are not responsible for your trading losses.\n\n"
+        "<i>By clicking 'I Agree' below, you confirm you have read and understood these terms.</i>"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ I AGREE & ACCEPT", callback_data=callback_data)],
+        [InlineKeyboardButton("❌ I Decline", callback_data="decline")]
+    ])
+    
+    try:
+        # Шлем сообщение ЛИЧНО пользователю (в бота)
+        await context.bot.send_message(chat_id=user_id, text=terms_text, reply_markup=keyboard, parse_mode='HTML')
+    except Exception as e:
+        print(f"⚠️ Could not DM user {user_id}: {e}")
+
+async def handle_terms_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() # Убираем часики загрузки
+    
+    data = query.data
+    
+    # Если нажал "Отклонить"
+    if data == "decline":
+        await query.edit_message_text("❌ <b>Access Denied.</b> You must accept the terms to join.", parse_mode='HTML')
+        return
+
+    # Если нажал "Согласен"
+    if data.startswith("agree"):
+        try:
+            # Извлекаем ID из кнопки
+            _, user_id, channel_id = data.split("|")
             
+            # 🔥 ГЛАВНАЯ МАГИЯ: Одобряем заявку в канал
+            await context.bot.approve_chat_join_request(chat_id=channel_id, user_id=user_id)
+            
+            # Меняем текст сообщения на успех
+            await query.edit_message_text(
+                "✅ <b>Accepted!</b>\n\n"
+                "You have been approved. Welcome to the channel! 🚀", 
+                parse_mode='HTML'
+            )
+            
+            # Уведомляем админа (опционально)
+            # Убедитесь, что ADMIN_ID определен выше в коде
+            if 'ADMIN_ID' in globals():
+                await context.bot.send_message(ADMIN_ID, f"👤 New Member Approved: {user_id}")
+                
+        except Exception as e:
+            await query.edit_message_text(f"⚠️ Error approving: {e}")
+
+
 @st.cache_resource
 def get_bot_app():
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
@@ -994,6 +1067,8 @@ def get_bot_app():
     
     # ✅ REGISTER NEW COMMAND
     app.add_handler(CommandHandler('auto', force_auto_scan))
+    app.add_handler(ChatJoinRequestHandler(handle_join_request))
+    app.add_handler(CallbackQueryHandler(handle_terms_callback))
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     return app
