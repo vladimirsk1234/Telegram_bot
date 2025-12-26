@@ -515,7 +515,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # We access global constants for the description
     # Ensure ADX_T, SMA_MAJ (or default 200) are defined in your GLOBAL SETTINGS if not already.
     
-    welcome_text = f"""👋 <b>Welcome to the Vova Sequence Screener, {user_name}!</b>
+    welcome_text = f"""👋 <b>Welcome to the S&P500 Sequence Screener. {user_name}!</b>
 
 I am a specialized quantitative trading assistant designed to automate the technical analysis of <b>S&P 500</b> equities. I operate as a <b>Long-Only</b> system, using a strict, rule-based algorithm to identify high-probability setups based on Market Structure, Momentum, and Volatility.
 
@@ -641,7 +641,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "ℹ️ HELP / INFO":
         help_text = (
-            "<b>📚 VOVA SCREENER TECHNICAL MANUAL</b>\n"
+            "<b>📚 S&P500 SCREENER TECHNICAL MANUAL</b>\n"
             "<i>Operational Guide & Logic Definitions</i>\n\n"
             
             "<b>1. PARAMETER CONFIGURATION (BUTTONS)</b>\n"
@@ -859,7 +859,7 @@ def run_bot_in_background(app):
         print(f"Bot thread error: {e}")
 
 if __name__ == '__main__':
-    st.set_page_config(page_title="Vova Bot", page_icon="🤖")
+    st.set_page_config(page_title="S&P500 Bot Screener", page_icon="🤖")
     st.title("💎 Vova Screener Bot (Singleton)")
     
     bot_app = get_bot_app()
