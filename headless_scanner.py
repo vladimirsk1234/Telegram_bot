@@ -520,11 +520,8 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
                        
                        # --- MODIFICATION: Footer with Legend & Disclaimer ---
                         legend = (
-                            "\n\n📚 <b>Key:</b>\n"
-                            "• <b>Trend:</b> Momentum + Strength\n"
-                            "• <b>Seq:</b> Market Structure (HH/HL)\n"
-                            "• <b>MA:</b> Major Trend Filter\n"
-                            "<i>(🟢 Good   🔴 Bad   🟡 Neutral)</i>"
+                            "\n\nℹ️ <b>Strategy & Legend:</b>\n"
+                            "Check the 📌 <b>Pinned Message</b> for full details on logic and indicators."
                         )
                         
                         disclaimer = (
