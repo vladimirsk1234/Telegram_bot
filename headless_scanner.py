@@ -1107,7 +1107,19 @@ if __name__ == '__main__':
         bot_thread.start()
         st.session_state.bot_thread_started = True
         print("✅ Bot polling thread started.")
+    import time
+    placeholder = st.empty()
     
+    # Этот цикл будет обновлять часы на странице, когда UptimeRobot заходит на нее
+    # Это не блокирует бота, так как бот в отдельном потоке
+    while True:
+        ny_tz = pytz.timezone('US/Eastern')
+        now_ny = datetime.datetime.now(ny_tz)
+        with placeholder.container():
+            st.metric("USA Market Time (Live Heartbeat)", now_ny.strftime("%H:%M:%S"))
+            st.caption(f"Last ping: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        time.sleep(1)
+        
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
     st.metric("USA Market Time", now_ny.strftime("%H:%M"))
