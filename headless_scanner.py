@@ -458,6 +458,50 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
     results_found = 0
     total = len(tickers)
     
+    # ==========================================
+    # OPTIMIZATION: BATCH DOWNLOAD ALL TICKERS AT ONCE (10-50x faster)
+    # ==========================================
+    inter = "1d" if p['tf'] == "Daily" else "1wk"
+    fetch_period = "2y" if p['tf'] == "Daily" else "5y"
+    
+    # Update status to show downloading
+    try:
+        if status_msg:
+            await status_msg.edit_text(
+                f"📥 <b>Downloading data for {total} tickers...</b>\n\n{config_display}",
+                parse_mode='HTML'
+            )
+    except: pass
+    
+    all_data = None
+    try:
+        # Download ALL tickers in one batch (much faster than sequential)
+        # yfinance returns MultiIndex DataFrame when downloading multiple tickers
+        all_data = yf.download(
+            tickers, 
+            period=fetch_period, 
+            interval=inter, 
+            progress=False, 
+            auto_adjust=False, 
+            group_by='ticker',
+            threads=True  # Enable multi-threading in yfinance
+        )
+        # Validate batch download was successful
+        if all_data is None or all_data.empty:
+            raise ValueError("Batch download returned empty data")
+    except Exception as e:
+        logger.warning(f"Batch download failed: {e}. Falling back to sequential downloads.")
+        all_data = None
+    
+    # Update status to show processing
+    try:
+        if status_msg:
+            await status_msg.edit_text(
+                f"🔎 <b>{scan_type} Processing {total} tickers...</b>\n\n{config_display}",
+                parse_mode='HTML'
+            )
+    except: pass
+    
     for i, t in enumerate(tickers):
         # Stop Logic (Only for Manual to prevent accidental stopping of Scheduler)
         if not is_auto and not context.user_data.get('scanning', False):
@@ -482,16 +526,82 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
                     )
             except: pass
             
-        if i % 50 == 0: gc.collect()
+        # Memory management - garbage collect periodically
+        if i % 50 == 0: 
+            gc.collect()
+            # Small pause to prevent overwhelming the system
+            await asyncio.sleep(0.05)
         
         try:
             await asyncio.sleep(0.01)
-            inter = "1d" if p['tf'] == "Daily" else "1wk"
-            fetch_period = "2y" if p['tf'] == "Daily" else "5y"
             
-            df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
+            # Get ticker data from batch download or sequential fallback
+            df = None
+            if all_data is not None and not all_data.empty:
+                # Handle multi-level column structure from batch download (multiple tickers)
+                if isinstance(all_data.columns, pd.MultiIndex):
+                    # Check if ticker exists in the batch data and has all required columns
+                    ticker_level = all_data.columns.get_level_values(0).unique()
+                    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                    has_all_cols = all((t, col) in all_data.columns for col in required_cols)
+                    
+                    if t in ticker_level and has_all_cols:
+                        try:
+                            df = pd.DataFrame({
+                                'Open': all_data[(t, 'Open')],
+                                'High': all_data[(t, 'High')],
+                                'Low': all_data[(t, 'Low')],
+                                'Close': all_data[(t, 'Close')],
+                                'Volume': all_data[(t, 'Volume')]
+                            })
+                            # Validate extracted data
+                            if df.empty or df['Close'].isna().all():
+                                raise ValueError("Empty or invalid data")
+                        except (KeyError, ValueError):
+                            # Failed to extract data, try sequential download as fallback
+                            df = None
+                            try:
+                                df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
+                                required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                                if df is None or df.empty or not all(col in df.columns for col in required_cols):
+                                    df = None
+                            except Exception:
+                                df = None
+                else:
+                    # Single ticker returned as regular DataFrame (when len(tickers)==1)
+                    if len(tickers) == 1 and t == tickers[0]:
+                        # Validate required columns exist
+                        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                        if all(col in all_data.columns for col in required_cols):
+                            df = all_data[required_cols].copy()
+                        else:
+                            df = None
+                    else:
+                        df = None
+            else:
+                # Fallback: sequential download if batch failed
+                try:
+                    df = yf.download(t, period=fetch_period, interval=inter, progress=False, auto_adjust=False, multi_level_index=False)
+                    # Validate downloaded data has required columns
+                    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                    if not all(col in df.columns for col in required_cols):
+                        df = None
+                except Exception:
+                    df = None
             
-            if len(df) < p['sma'] + 5: continue
+            # Data validation check
+            if df is None or df.empty or len(df) < p['sma'] + 5:
+                continue
+            
+            # Validate required columns exist and have valid data
+            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            if not all(col in df.columns for col in required_cols):
+                continue
+            
+            # Drop rows with NaN in critical columns
+            df = df.dropna(subset=['Close', 'High', 'Low', 'Open'])
+            if len(df) < p['sma'] + 5:
+                continue
             
             df = run_vova_logic(df, p['sma'], EMA_F, EMA_S, ADX_L, ADX_T, ATR_L)
             valid, d, errs = analyze_trade(df, -1)
@@ -512,7 +622,8 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
             # --- SENDING LOGIC ---
             if show_card:
                 info = get_extended_info(t)
-                await asyncio.sleep(0.5)
+                # Small delay to prevent rate limiting (especially important for many notifications)
+                await asyncio.sleep(0.1)
                 risk_per_share = d['P'] - d['SL']
                 shares = int(p['risk_usd'] / risk_per_share) if risk_per_share > 0 else 0
                 
@@ -535,19 +646,59 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
                         
                         final_msg = public_card # + legend + disclaimer                 
                         
-                        await context.bot.send_message(chat_id=CHANNEL_ID, text=final_msg, parse_mode='HTML', disable_web_page_preview=True)
-                        context.bot_data['channel_mem']['tickers'].append(t)
-                        results_found += 1
+                        try:
+                            await context.bot.send_message(chat_id=CHANNEL_ID, text=final_msg, parse_mode='HTML', disable_web_page_preview=True)
+                            context.bot_data['channel_mem']['tickers'].append(t)
+                            results_found += 1
+                            # Additional delay for channel sends to respect rate limits
+                            await asyncio.sleep(0.2)
+                        except telegram.error.TimedOut:
+                            logger.warning(f"Timeout sending {t} to channel, retrying...")
+                            await asyncio.sleep(1)
+                            try:
+                                await context.bot.send_message(chat_id=CHANNEL_ID, text=final_msg, parse_mode='HTML', disable_web_page_preview=True)
+                                context.bot_data['channel_mem']['tickers'].append(t)
+                                results_found += 1
+                            except: pass
+                        except telegram.error.RetryAfter as e:
+                            logger.warning(f"Rate limited, waiting {e.retry_after} seconds...")
+                            await asyncio.sleep(e.retry_after)
+                            try:
+                                await context.bot.send_message(chat_id=CHANNEL_ID, text=final_msg, parse_mode='HTML', disable_web_page_preview=True)
+                                context.bot_data['channel_mem']['tickers'].append(t)
+                                results_found += 1
+                            except: pass
+                        except Exception as e:
+                            logger.error(f"Error sending {t} to channel: {e}")
                         
                 # 2. MANUAL SCAN -> PRIVATE USER
                 elif not is_auto:
                       card = format_dashboard_card(t, d, shares, is_new, info, p['risk_usd'], p['sma'], public_view=False)
-                      await context.bot.send_message(chat_id=target_chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
-                      results_found += 1
+                      try:
+                          await context.bot.send_message(chat_id=target_chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
+                          results_found += 1
+                      except telegram.error.RetryAfter as e:
+                          logger.warning(f"Rate limited, waiting {e.retry_after} seconds...")
+                          await asyncio.sleep(e.retry_after)
+                          try:
+                              await context.bot.send_message(chat_id=target_chat_id, text=card, parse_mode='HTML', disable_web_page_preview=True)
+                              results_found += 1
+                          except: pass
+                      except Exception as e:
+                          logger.error(f"Error sending {t} to user: {e}")
                 
         except Exception as e:
-            if manual_mode: await context.bot.send_message(target_chat_id, f"⚠️ {t}: {e}")
+            logger.error(f"Error processing {t}: {e}")
+            if manual_mode: 
+                try:
+                    await context.bot.send_message(target_chat_id, f"⚠️ {t}: {str(e)[:100]}")
+                except: pass
             continue
+    
+    # Cleanup batch data to free memory
+    if all_data is not None:
+        del all_data
+        gc.collect()
     
     # Final Report
     if not is_auto:
