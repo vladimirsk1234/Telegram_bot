@@ -202,20 +202,69 @@ def format_market_cap(val):
         return str(val)
     except: return "N/A"
 
-def get_extended_info(ticker):
-    try:
-        t = yf.Ticker(ticker)
-        try: mc = t.fast_info['market_cap']
-        except: mc = None
+def get_extended_info(ticker, max_retries=3):
+    """
+    Fetch Market Cap and P/E ratio with retry logic and proper error handling.
+    """
+    mc = None
+    pe = None
+    
+    for attempt in range(max_retries):
         try:
-            i = t.info
-            pe = i.get('trailingPE') or i.get('forwardPE')
-        except: pe = None
-        pe_str = f"{pe:.2f}" if pe else "N/A"
-        mc_str = format_market_cap(mc)
-        return {"mc": mc_str, "pe": pe_str}
-    except:
-        return {"mc": "N/A", "pe": "N/A"}
+            t = yf.Ticker(ticker)
+            
+            # 1. Get Market Cap (fast_info is more reliable)
+            if mc is None:
+                try:
+                    mc = t.fast_info.get('market_cap') or t.fast_info.get('marketCap')
+                except Exception as e:
+                    logger.debug(f"{ticker} market cap attempt {attempt+1}: {e}")
+            
+            # 2. Get P/E Ratio (info is slower, needs retries)
+            if pe is None:
+                try:
+                    info = t.info
+                    if info:
+                        # Try multiple P/E fields (Yahoo changes these)
+                        pe = (
+                            info.get('trailingPE') or 
+                            info.get('forwardPE') or 
+                            info.get('trailingPE', None)
+                        )
+                        # Validate P/E is a real number
+                        if pe is not None:
+                            pe = float(pe)
+                            if pe <= 0 or pe > 10000:  # Sanity check
+                                pe = None
+                except requests.exceptions.Timeout:
+                    logger.warning(f"{ticker} P/E timeout (attempt {attempt+1}/{max_retries})")
+                    time.sleep(0.5 * (attempt + 1))  # Backoff delay
+                    continue
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"{ticker} P/E network error: {e}")
+                    time.sleep(0.3 * (attempt + 1))
+                    continue
+                except Exception as e:
+                    logger.debug(f"{ticker} P/E attempt {attempt+1}: {type(e).__name__}")
+            
+            # If we got both values, exit early
+            if mc is not None and pe is not None:
+                break
+                
+            # Small delay between retries to avoid rate limiting
+            if attempt < max_retries - 1:
+                time.sleep(0.2 * (attempt + 1))
+                
+        except Exception as e:
+            logger.warning(f"{ticker} info fetch error (attempt {attempt+1}): {type(e).__name__}")
+            time.sleep(0.3 * (attempt + 1))
+            continue
+    
+    # Format results
+    pe_str = f"{pe:.2f}" if pe else "N/A"
+    mc_str = format_market_cap(mc)
+    
+    return {"mc": mc_str, "pe": pe_str}
 
 # --- INDICATORS ---
 def calc_sma(s, l): return s.rolling(l).mean()
