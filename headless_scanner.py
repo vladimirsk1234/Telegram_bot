@@ -533,7 +533,7 @@ async def run_scan_process(update, context, p, tickers, manual_mode=False, is_au
             await asyncio.sleep(0.05)
         
         try:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.015)
             
             # Get ticker data from batch download or sequential fallback
             df = None
