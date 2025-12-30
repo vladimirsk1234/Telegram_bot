@@ -1,10 +1,10 @@
-streamlit
+streamlit>=1.30.0
 python-telegram-bot[job-queue]>=21.9
-yfinance
-pandas
-numpy
+yfinance>=0.2.40
+pandas>=2.0.0
+numpy>=1.24.0,<3.0.0
 requests
 lxml
 pytz
 nest_asyncio
-numba
+numba>=0.58.0

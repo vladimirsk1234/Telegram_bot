@@ -20,7 +20,7 @@ import numpy as np
 # ==========================================
 # NUMBA ENGINE (Скорость x500)
 # ==========================================
-@jit(nopython=True, cache=True)
+@jit(nopython=True, cache=False)
 def calculate_structure_engine(c_a, h_a, l_a):
     n = len(c_a)
     
