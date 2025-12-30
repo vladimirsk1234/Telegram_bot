@@ -971,8 +971,31 @@ async def handle_terms_callback(update: Update, context: ContextTypes.DEFAULT_TY
 def main():
     print("🤖 Starting bot...")
     
+    # Add longer timeouts for network issues
+    from telegram.ext import Defaults
+    from telegram.request import HTTPXRequest
+    
+    # Create request with longer timeouts
+    request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0
+    )
+    
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
-    app = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
+    app = (
+        ApplicationBuilder()
+        .token(TG_TOKEN)
+        .persistence(my_persistence)
+        .request(request)
+        .get_updates_request(request)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
+        .build()
+    )
     
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('stats', stats_command))
