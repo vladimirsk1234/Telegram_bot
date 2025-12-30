@@ -1244,7 +1244,11 @@ def run_bot_in_background(app):
         print("🚀 Starting bot polling...")
         if not app.updater or not app.updater.running:
             loop.create_task(auto_scan_scheduler(app))
-            app.run_polling(stop_signals=None, close_loop=False)
+            app.run_polling(stop_signals=None, close_loop=False, drop_pending_updates=True)
+    except telegram.error.Conflict as e:
+        print(f"❌ CONFLICT ERROR: Another bot instance is already running!")
+        print(f"   Details: {e}")
+        logger.error(f"Polling conflict - another instance running: {e}")
     except Exception as e:
         print(f"❌ Bot thread CRASHED: {e}")
         import traceback
@@ -1257,6 +1261,26 @@ if __name__ == '__main__':
     
     # Show startup status
     st.info("🔄 Initializing bot...")
+    
+    # 1. TEST TOKEN FIRST
+    try:
+        import requests as req
+        test_url = f"https://api.telegram.org/bot{TG_TOKEN}/getMe"
+        resp = req.get(test_url, timeout=10)
+        if resp.status_code == 200:
+            bot_info = resp.json()
+            if bot_info.get('ok'):
+                bot_name = bot_info['result'].get('username', 'Unknown')
+                st.success(f"✅ Token valid! Bot: @{bot_name}")
+            else:
+                st.error(f"❌ Token invalid: {bot_info}")
+                st.stop()
+        else:
+            st.error(f"❌ Token check failed: HTTP {resp.status_code}")
+            st.stop()
+    except Exception as e:
+        st.error(f"❌ Token test error: {e}")
+        st.stop()
     
     try:
         bot_app = get_bot_app()
@@ -1273,6 +1297,7 @@ if __name__ == '__main__':
         st.session_state.bot_thread_started = True
         print("✅ Bot polling thread started.")
         st.success("✅ Bot polling started!")
+        st.warning("⚠️ If bot doesn't respond, check: Is another instance running? (Only ONE can poll!)")
     import time
     placeholder = st.empty()
     
