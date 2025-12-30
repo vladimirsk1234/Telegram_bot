@@ -1,0 +1,148 @@
+================================================================================
+                    TELEGRAM BOT PROJECT - STATUS REPORT
+                    Date: December 30, 2025
+================================================================================
+
+PROJECT: S&P500 Screener Telegram Bot
+REPO: https://github.com/vladimirsk1234/Telegram_bot
+BOT: @Vova_Screener_Bot
+
+================================================================================
+                              CURRENT STATUS: ❌ NOT WORKING
+================================================================================
+
+ISSUE: Bot cannot connect to Telegram API from cloud hosting platforms.
+
+================================================================================
+                              PROBLEM SUMMARY
+================================================================================
+
+1. STREAMLIT CLOUD - ❌ FAILED
+   - Error: "Connection to api.telegram.org timed out"
+   - Cause: Streamlit Cloud servers cannot reach Telegram API
+   - Status: BLOCKED/UNREACHABLE
+
+2. RAILWAY.APP - ❌ FAILED  
+   - Error: "Network is unreachable" (Errno 101)
+   - Cause: Railway servers also cannot reach Telegram API
+   - Status: BLOCKED/UNREACHABLE
+
+3. TOKEN STATUS - ✅ VALID
+   - Token tested manually from browser: WORKS
+   - Bot ID: 8407386703
+   - Bot Username: @Vova_Screener_Bot
+   - API Response: {"ok":true,"result":{"id":8407386703,"is_bot":true...}}
+
+================================================================================
+                              ROOT CAUSE ANALYSIS
+================================================================================
+
+The Telegram Bot Token is VALID and works when tested from a regular browser.
+However, BOTH Streamlit Cloud AND Railway.app cannot establish network 
+connections to api.telegram.org.
+
+Possible reasons:
+1. Cloud platforms blocking outbound connections to Telegram
+2. Telegram blocking IP ranges from these cloud providers
+3. Network/firewall restrictions on cloud platforms
+
+================================================================================
+                              FILES IN REPOSITORY
+================================================================================
+
+1. headless_scanner.py - Original Streamlit version (not working on Streamlit Cloud)
+2. bot.py - Standalone version for Railway/Render (created for deployment)
+3. requirements.txt - Python dependencies (streamlit removed for standalone)
+4. Procfile - Railway deployment config
+5. railway.json - Railway settings
+6. render.yaml - Render.com deployment config
+7. users.txt - Authorized users list
+
+================================================================================
+                              ATTEMPTED SOLUTIONS
+================================================================================
+
+1. ✅ Fixed Numba cache issue (cache=False for cloud compatibility)
+2. ✅ Added error logging and diagnostics
+3. ✅ Added token validation at startup
+4. ✅ Increased connection timeouts to 60 seconds
+5. ✅ Created standalone bot.py without Streamlit dependency
+6. ✅ Configured for Railway.app deployment
+7. ✅ Configured for Render.com deployment
+8. ❌ Both platforms still cannot reach Telegram
+
+================================================================================
+                              RECOMMENDED NEXT STEPS
+================================================================================
+
+Option 1: TRY RENDER.COM
+   - Already configured in repository (render.yaml)
+   - May have different network routing than Railway
+   - Setup: https://render.com → New Background Worker → Connect GitHub repo
+
+Option 2: USE A VPS (Virtual Private Server)
+   - Providers: DigitalOcean, Vultr, Linode, Hetzner
+   - Cost: $4-6/month
+   - Full network access, no restrictions
+   - Commands to deploy:
+     ```
+     git clone https://github.com/vladimirsk1234/Telegram_bot
+     cd Telegram_bot
+     pip install -r requirements.txt
+     export TG_TOKEN="your-token"
+     export ADMIN_ID="your-id"
+     python bot.py
+     ```
+
+Option 3: USE PYTHONANYWHERE
+   - Free tier available
+   - May have better Telegram connectivity
+   - URL: https://www.pythonanywhere.com
+
+Option 4: RUN LOCALLY
+   - Bot works from local machine (tested via browser)
+   - Use a local computer or home server
+   - Keep running with: screen, tmux, or systemd service
+
+================================================================================
+                              ENVIRONMENT VARIABLES REQUIRED
+================================================================================
+
+TG_TOKEN    = Bot token from @BotFather (REQUIRED)
+ADMIN_ID    = Your Telegram user ID (REQUIRED)
+CHANNEL_ID  = Channel ID for auto-posting (OPTIONAL)
+GITHUB_USERS_URL = URL to users whitelist (OPTIONAL)
+
+================================================================================
+                              BOT FEATURES (When Working)
+================================================================================
+
+- Scans all S&P 500 stocks for trading setups
+- Uses market structure analysis (HH/HL patterns)
+- Applies momentum indicators (EMA, MACD, ADX)
+- Calculates position sizing based on risk
+- Auto-scan scheduler at 15:00 ET on market days
+- Channel posting for public signals
+- Gatekeeper for channel join requests with terms acceptance
+
+================================================================================
+                              TECHNICAL STACK
+================================================================================
+
+- Python 3.12
+- python-telegram-bot v21.9+
+- yfinance (stock data)
+- pandas, numpy (data processing)
+- numba (JIT compilation for speed)
+- pytz (timezone handling)
+
+================================================================================
+                              CONTACT/SUPPORT
+================================================================================
+
+Repository Owner: vladimirsk1234
+Telegram Contact: @Vova_Skl
+
+================================================================================
+                              END OF REPORT
+================================================================================
