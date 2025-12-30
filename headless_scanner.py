@@ -14,6 +14,9 @@ import gc
 import threading
 import warnings
 
+# --- PAGE CONFIG MUST BE FIRST STREAMLIT COMMAND ---
+st.set_page_config(page_title="S&P500 Bot Screener", page_icon="🤖")
+
 from numba import jit, float64, int64, boolean
 import numpy as np
 
@@ -164,6 +167,7 @@ try:
     if CHANNEL_ID: CHANNEL_ID = int(CHANNEL_ID)
     print(f"✅ Loaded Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID} | Channel: {CHANNEL_ID}")
 except Exception as e:
+    print(f"❌ Secret Error: {e}")  # <--- LOG ERROR TO CONSOLE
     st.error(f"❌ Secret Error: {e}")
     st.stop()
 
@@ -1248,7 +1252,6 @@ def run_bot_in_background(app):
         print(f"Bot thread error: {e}")
 
 if __name__ == '__main__':
-    st.set_page_config(page_title="S&P500 Bot Screener", page_icon="🤖")
     st.title("💎 Vova Screener Bot (Singleton)")
     
     bot_app = get_bot_app()
