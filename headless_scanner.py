@@ -136,7 +136,6 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     filters,
-    PicklePersistence,
     Application,
     ChatJoinRequestHandler, # <--- ДОБАВИТЬ ЭТО (Ловит заявку в канал)
     CallbackQueryHandler    # <--- ДОБАВИТЬ ЭТО (Ловит нажатие на кнопку)
@@ -990,7 +989,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['sma'] = int(text.split()[1])
             context.user_data['input_mode'] = None
             context.user_data['params'] = p
-            await context.application.persistence.update_user_data(update.effective_user.id, context.user_data)
+            # Persistence removed for Streamlit Cloud compatibility
             await update.message.reply_text(f"✅ SMA set to {p['sma']}", reply_markup=get_main_keyboard(p))
         return
     if context.user_data.get('input_mode') == "tf_select":
@@ -1002,7 +1001,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         context.user_data['input_mode'] = None
         context.user_data['params'] = p
-        await context.application.persistence.update_user_data(update.effective_user.id, context.user_data)
+        # Persistence removed for Streamlit Cloud compatibility
         await update.message.reply_text(f"✅ Timeframe set to {p['tf']}", reply_markup=get_main_keyboard(p))
         return
 
@@ -1010,7 +1009,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p['new_only'] = not p['new_only']
         status = "ENABLED" if p['new_only'] else "DISABLED"
         context.user_data['params'] = p
-        await context.application.persistence.update_user_data(update.effective_user.id, context.user_data)
+        # Persistence removed for Streamlit Cloud compatibility
         await update.message.reply_text(f"✅ Only New Signals: {status}", reply_markup=get_main_keyboard(p))
         return
 
@@ -1032,7 +1031,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['risk_usd'] = val
             context.user_data['input_mode'] = None
             context.user_data['params'] = p
-            await context.application.persistence.update_user_data(update.effective_user.id, context.user_data)
+            # Persistence removed for Streamlit Cloud compatibility
             await update.message.reply_text(f"✅ Risk updated to ${val}", reply_markup=get_main_keyboard(p))
         except: await update.message.reply_text("❌ Invalid amount.")
         return
@@ -1043,7 +1042,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['min_rr'] = val
             context.user_data['input_mode'] = None
             context.user_data['params'] = p
-            await context.application.persistence.update_user_data(update.effective_user.id, context.user_data)
+            # Persistence removed for Streamlit Cloud compatibility
             await update.message.reply_text(f"✅ Min RR updated to {val}", reply_markup=get_main_keyboard(p))
         except: await update.message.reply_text("❌ Invalid number.")
         return
@@ -1054,7 +1053,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p['max_atr'] = val
             context.user_data['input_mode'] = None
             context.user_data['params'] = p
-            await context.application.persistence.update_user_data(update.effective_user.id, context.user_data)
+            # Persistence removed for Streamlit Cloud compatibility
             await update.message.reply_text(f"✅ Max ATR updated to {val}%", reply_markup=get_main_keyboard(p))
         except: await update.message.reply_text("❌ Invalid number.")
         return
@@ -1224,8 +1223,9 @@ async def handle_terms_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 @st.cache_resource
 def get_bot_app():
-    my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
-    app = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
+    # FIX: Removed PicklePersistence due to Streamlit Cloud ephemeral storage
+    # User data will be stored in memory only (resets on redeploy)
+    app = ApplicationBuilder().token(TG_TOKEN).build()
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('stats', stats_command))
     
