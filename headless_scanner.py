@@ -155,17 +155,42 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # 1. LOAD SECRETS (ROBUST VERSION)
 # ==========================================
+def _read_secret(name: str, *, default=None):
+    """
+    Prefer environment variables (works on any host),
+    fallback to Streamlit secrets when running under Streamlit.
+    """
+    val = os.getenv(name, None)
+    if val is not None:
+        return val
+    try:
+        # st.secrets behaves like a dict, but can raise if not configured
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
+def _require_secret(name: str) -> str:
+    val = _read_secret(name, default=None)
+    if val is None or str(val).strip() == "":
+        raise KeyError(f"Missing required secret: {name} (set env var {name} or Streamlit secret)")
+    return str(val).strip()
+
+
 try:
-    TG_TOKEN = st.secrets["TG_TOKEN"].strip()
-    ADMIN_ID = int(st.secrets["ADMIN_ID"])
-    GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "").strip()
-    # NEW: Load Channel ID
-    CHANNEL_ID = st.secrets.get("CHANNEL_ID", None)
-    if CHANNEL_ID: CHANNEL_ID = int(CHANNEL_ID)
+    TG_TOKEN = _require_secret("TG_TOKEN")
+    ADMIN_ID = int(_require_secret("ADMIN_ID"))
+    GITHUB_USERS_URL = str(_read_secret("GITHUB_USERS_URL", default="") or "").strip()
+    CHANNEL_ID_RAW = _read_secret("CHANNEL_ID", default=None)
+    CHANNEL_ID = int(str(CHANNEL_ID_RAW).strip()) if CHANNEL_ID_RAW not in (None, "") else None
     print(f"✅ Loaded Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID} | Channel: {CHANNEL_ID}")
 except Exception as e:
-    st.error(f"❌ Secret Error: {e}")
-    st.stop()
+    # When run under Streamlit, show a visible error; otherwise fail fast with logs.
+    try:
+        st.error(f"❌ Secret Error: {e}")
+        st.stop()
+    except Exception:
+        raise RuntimeError(f"Secret Error: {e}") from e
 
 # 2. GLOBAL SETTINGS
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
@@ -1224,7 +1249,10 @@ async def handle_terms_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 @st.cache_resource
 def get_bot_app():
-    my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
+    # Many hosts/container images have a read-only working directory.
+    # /tmp is almost always writable.
+    persistence_path = _read_secret("BOT_PERSISTENCE_PATH", default="/tmp/bot_data.pickle")
+    my_persistence = PicklePersistence(filepath=str(persistence_path), update_interval=1)
     app = ApplicationBuilder().token(TG_TOKEN).persistence(my_persistence).build()
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('stats', stats_command))
@@ -1252,26 +1280,21 @@ if __name__ == '__main__':
     st.title("💎 Vova Screener Bot (Singleton)")
     
     bot_app = get_bot_app()
-    
-    if "bot_thread_started" not in st.session_state:
-        bot_thread = threading.Thread(target=run_bot_in_background, args=(bot_app,), daemon=True)
-        bot_thread.start()
-        st.session_state.bot_thread_started = True
+
+    @st.cache_resource
+    def _start_bot_thread_once():
+        # Start exactly one polling thread per Streamlit process (across sessions).
+        t = threading.Thread(target=run_bot_in_background, args=(bot_app,), daemon=True)
+        t.start()
         print("✅ Bot polling thread started.")
-    import time
-    placeholder = st.empty()
-    
-    # Этот цикл будет обновлять часы на странице, когда UptimeRobot заходит на нее
-    # Это не блокирует бота, так как бот в отдельном потоке
-    while True:
-        ny_tz = pytz.timezone('US/Eastern')
-        now_ny = datetime.datetime.now(ny_tz)
-        with placeholder.container():
-            st.metric("USA Market Time (Live Heartbeat)", now_ny.strftime("%H:%M:%S"))
-            st.caption(f"Last ping: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
-        time.sleep(1)
-        
+        return True
+
+    _start_bot_thread_once()
+
+    # Render once and let Streamlit manage reruns. Avoid infinite loops: they often
+    # break health checks and make the app appear "stuck" on many hosts.
     ny_tz = pytz.timezone('US/Eastern')
     now_ny = datetime.datetime.now(ny_tz)
-    st.metric("USA Market Time", now_ny.strftime("%H:%M"))
+    st.metric("USA Market Time", now_ny.strftime("%H:%M:%S"))
+    st.caption(f"Last render: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
     st.success("Bot is running in background.")
