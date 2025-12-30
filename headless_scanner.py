@@ -156,6 +156,7 @@ logger = logging.getLogger(__name__)
 # 1. LOAD SECRETS (ROBUST VERSION)
 # ==========================================
 try:
+    # Try to get secrets from Streamlit
     TG_TOKEN = st.secrets["TG_TOKEN"].strip()
     ADMIN_ID = int(st.secrets["ADMIN_ID"])
     GITHUB_USERS_URL = st.secrets.get("GITHUB_USERS_URL", "").strip()
@@ -163,9 +164,34 @@ try:
     CHANNEL_ID = st.secrets.get("CHANNEL_ID", None)
     if CHANNEL_ID: CHANNEL_ID = int(CHANNEL_ID)
     print(f"✅ Loaded Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID} | Channel: {CHANNEL_ID}")
+except (KeyError, AttributeError, TypeError) as e:
+    # Fallback to environment variables if Streamlit secrets not available
+    import os
+    TG_TOKEN = os.getenv("TG_TOKEN", "").strip()
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+    GITHUB_USERS_URL = os.getenv("GITHUB_USERS_URL", "").strip()
+    CHANNEL_ID = os.getenv("CHANNEL_ID", None)
+    if CHANNEL_ID: CHANNEL_ID = int(CHANNEL_ID)
+    
+    if not TG_TOKEN or ADMIN_ID == 0:
+        error_msg = f"❌ Secret Error: Missing required secrets. Error: {e}\nPlease configure TG_TOKEN and ADMIN_ID in Streamlit secrets or environment variables."
+        print(error_msg)
+        try:
+            st.error(error_msg)
+            st.stop()
+        except:
+            # If Streamlit isn't running, raise an exception instead
+            raise ValueError(error_msg)
+    else:
+        print(f"✅ Loaded from ENV: Token: {TG_TOKEN[:5]}... | Admin ID: {ADMIN_ID} | Channel: {CHANNEL_ID}")
 except Exception as e:
-    st.error(f"❌ Secret Error: {e}")
-    st.stop()
+    error_msg = f"❌ Secret Error: {e}"
+    print(error_msg)
+    try:
+        st.error(error_msg)
+        st.stop()
+    except:
+        raise ValueError(error_msg)
 
 # 2. GLOBAL SETTINGS
 EMA_F = 20; EMA_S = 40; ADX_L = 14; ADX_T = 20; ATR_L = 14
