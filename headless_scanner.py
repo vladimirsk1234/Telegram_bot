@@ -20,7 +20,7 @@ import numpy as np
 # ==========================================
 # NUMBA ENGINE (Скорость x500)
 # ==========================================
-@jit(nopython=True, cache=True)
+@jit(nopython=True, cache=False)  # cache=False for Streamlit Cloud compatibility
 def calculate_structure_engine(c_a, h_a, l_a):
     n = len(c_a)
     
@@ -1241,23 +1241,38 @@ def run_bot_in_background(app):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
+        print("🚀 Starting bot polling...")
         if not app.updater or not app.updater.running:
             loop.create_task(auto_scan_scheduler(app))
             app.run_polling(stop_signals=None, close_loop=False)
     except Exception as e:
-        print(f"Bot thread error: {e}")
+        print(f"❌ Bot thread CRASHED: {e}")
+        import traceback
+        traceback.print_exc()
+        logger.error(f"Bot thread error: {e}", exc_info=True)
 
 if __name__ == '__main__':
     st.set_page_config(page_title="S&P500 Bot Screener", page_icon="🤖")
     st.title("💎 Vova Screener Bot (Singleton)")
     
-    bot_app = get_bot_app()
+    # Show startup status
+    st.info("🔄 Initializing bot...")
+    
+    try:
+        bot_app = get_bot_app()
+        st.success("✅ Bot app created successfully!")
+    except Exception as e:
+        st.error(f"❌ Failed to create bot: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+        st.stop()
     
     if "bot_thread_started" not in st.session_state:
         bot_thread = threading.Thread(target=run_bot_in_background, args=(bot_app,), daemon=True)
         bot_thread.start()
         st.session_state.bot_thread_started = True
         print("✅ Bot polling thread started.")
+        st.success("✅ Bot polling started!")
     import time
     placeholder = st.empty()
     
