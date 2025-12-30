@@ -971,16 +971,32 @@ async def handle_terms_callback(update: Update, context: ContextTypes.DEFAULT_TY
 def main():
     print("🤖 Starting bot...")
     
+    # TEST 1: Can we reach Telegram at all?
+    print("🔍 Testing Telegram connectivity...")
+    try:
+        import urllib.request
+        import ssl
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{TG_TOKEN}/getMe",
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        with urllib.request.urlopen(req, timeout=60, context=ctx) as response:
+            data = response.read().decode()
+            print(f"✅ Telegram API Response: {data[:200]}")
+    except Exception as e:
+        print(f"❌ Cannot reach Telegram: {e}")
+        print("⚠️ Trying alternative method...")
+    
     # Add longer timeouts for network issues
-    from telegram.ext import Defaults
     from telegram.request import HTTPXRequest
     
     # Create request with longer timeouts
     request = HTTPXRequest(
-        connect_timeout=30.0,
-        read_timeout=30.0,
-        write_timeout=30.0,
-        pool_timeout=30.0
+        connect_timeout=60.0,
+        read_timeout=60.0,
+        write_timeout=60.0,
+        pool_timeout=60.0
     )
     
     my_persistence = PicklePersistence(filepath='bot_data.pickle', update_interval=1)
@@ -990,10 +1006,10 @@ def main():
         .persistence(my_persistence)
         .request(request)
         .get_updates_request(request)
-        .connect_timeout(30.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
-        .pool_timeout(30.0)
+        .connect_timeout(60.0)
+        .read_timeout(60.0)
+        .write_timeout(60.0)
+        .pool_timeout(60.0)
         .build()
     )
     
