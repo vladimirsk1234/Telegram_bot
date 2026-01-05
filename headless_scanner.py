@@ -55,9 +55,9 @@ def calculate_structure_engine(c_a, h_a, l_a):
         brk = False
         # Логика пробоя (Break check)
         if prev_st == 1 and not np.isnan(prev_cr):
-            if c < prev_cr: brk = True
+            if c <= prev_cr: brk = True
         elif prev_st == -1 and not np.isnan(prev_cr):
-            if c > prev_cr: brk = True
+            if c >= prev_cr: brk = True
             
         if brk:
             if prev_st == 1: 
